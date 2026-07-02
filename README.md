@@ -87,12 +87,12 @@ This repo is the **reference implementation** — real, running source, not a de
 
 **Firmware (buildable as-is with [PlatformIO](https://platformio.org/)):**
 
-```
-pio run -e eyes                                          # Teensy 4.1 — eyes + mouth (root platformio.ini)
+```bash
+pio run -e eyes                                                # Teensy 4.1 — eyes + mouth (root platformio.ini)
 cd servo_teensy40/teensy40_base_mount && pio run -e teensy40   # Teensy 4.0 — servo + gesture sensor
 ```
 
-Both firmware trees build clean from this repo, including the one PlatformIO `extra_scripts` build-time patch ([scripts/patch_gc9a01a.py](scripts/patch_gc9a01a.py), a required fix for the GC9A01A round-display driver's `drawChar` overload — without it `env:eyes` fails to compile).
+Both trees compile clean as shipped — verified with PlatformIO 6.1.19 (Teensy 4.1 and 4.0 platform toolchains, both `[SUCCESS]`). The `[env:eyes]` build depends on one required pre-build hook, [scripts/patch_gc9a01a.py](scripts/patch_gc9a01a.py): the root `platformio.ini` names it as an `extra_scripts = pre:` entry, so a clone that's missing the file aborts before compilation even starts (this file was the one build-breaking gap in the first public export). When present, PlatformIO runs it before each build to patch the fetched `GC9A01A1_t3n` display library, whose 6-argument `drawChar` wrapper otherwise calls itself — infinite recursion at runtime — instead of forwarding to its 7-argument overload.
 
 **Pi4 orchestrator (`pi4/`) — source ships, deployment scaffolding does not:**
 
