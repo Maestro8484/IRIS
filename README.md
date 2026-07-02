@@ -1,5 +1,10 @@
 # IRIS — a personality-first AI robot face
 
+![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)
+![Eyes: Teensy 4.1](https://img.shields.io/badge/eyes-Teensy%204.1-orange)
+![Servo/Gestures: Teensy 4.0](https://img.shields.io/badge/servo%2Fgestures-Teensy%204.0-orange)
+![Orchestrator: Raspberry Pi 4](https://img.shields.io/badge/orchestrator-Raspberry%20Pi%204-c51a4a)
+
 IRIS is a personality-first AI robot. The core design goal is genuine character, emotional congruence, and a face that means what it says — voice, eyes, mouth, and LED lighting all changing simultaneously, in real time, based on conversational content. All technical architecture serves this goal.
 
 IRIS borrows from interpersonal neurobiology — the science of how people attune to each other through affective attunement, paraverbal signal, timing, and congruent affect — and treats it as an engineering spec rather than a metaphor. The aim is the uncanny-in-a-good-way feeling of being talked *to*, not at: a robot with enough character to trade quips with an adult and play I Spy or "guess my face" with a kid. The personality is defined by what IRIS *is*, not by what it must avoid — which keeps the model's anthropomorphic expression wide open.
@@ -75,6 +80,29 @@ A personality robot has a failure mode ordinary assistants don't: sounding like 
 
 - [pi4/iris_bench_report.py](pi4/iris_bench_report.py) — pipe the assistant journal through it to get a per-stage latency table (recording / STT / first-chunk / stream / TTS / playback / total) for every recent turn.
 - [scripts/iris_status.ps1](scripts/iris_status.ps1) — writes a machine-readable `IRIS_STATUS.json` (git state, last firmware build, live service state on the Pi) built specifically so an AI agent can load ground truth at session start instead of parsing prose.
+
+## Building it yourself: what's here and what isn't
+
+This repo is the **reference implementation** — real, running source, not a demo stub — but it is not a turnkey installer. Be clear-eyed about what ships and what you'd need to supply.
+
+**Firmware (buildable as-is with [PlatformIO](https://platformio.org/)):**
+
+```
+pio run -e eyes                                          # Teensy 4.1 — eyes + mouth (root platformio.ini)
+cd servo_teensy40/teensy40_base_mount && pio run -e teensy40   # Teensy 4.0 — servo + gesture sensor
+```
+
+Both firmware trees build clean from this repo, including the one PlatformIO `extra_scripts` build-time patch ([scripts/patch_gc9a01a.py](scripts/patch_gc9a01a.py), a required fix for the GC9A01A round-display driver's `drawChar` overload — without it `env:eyes` fails to compile).
+
+**Pi4 orchestrator (`pi4/`) — source ships, deployment scaffolding does not:**
+
+`pi4/` is the actual production Python — `assistant.py`, `services/`, `core/`, `hardware/`, the WebUI — read this for the real architecture and pipeline logic. What's *not* included, because it doesn't exist as a generic artifact in the private repo either:
+
+- **No systemd unit files for the core services.** Live IRIS runs `assistant.service` and `iris-web.service`, but those are hand-authored on the deployed Pi, not tracked as portable templates in the repo. (The one `.service` file that does ship, [pi4/scripts/ogle-bridge.service](pi4/scripts/ogle-bridge.service), belongs to a retired, out-of-scope face-tracking node — not a template for the core pipeline.)
+- **No `iris_config.json`.** Runtime config (LED brightness, TTS voice, sensor thresholds, etc.) is authored fresh per-deployment; there's no shipped default to copy.
+- **[pi4/requirements.txt](pi4/requirements.txt)** — provided, but *inferred mechanically* from the actual `import` statements in `pi4/**/*.py` (AST-parsed, third-party only), not hand-verified as a clean `pip install -r requirements.txt` on fresh hardware. Some of these (`RPi.GPIO`, `smbus2`, `spidev`) are more commonly installed via `apt` on Raspberry Pi OS than pip.
+
+Treat the Pi4 side as **architecture to read and adapt to your own hardware**, not a one-command deploy.
 
 ## How it was built: the MAD loop
 

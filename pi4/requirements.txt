@@ -1,0 +1,18 @@
+# Inferred mechanically from `import`/`from` statements across pi4/**/*.py
+# (AST-parsed, third-party only — stdlib and IRIS's own modules excluded).
+# NOT tested standalone as a fresh-install list; the reference deployment
+# is a Raspberry Pi 4 with these installed over time, some via apt
+# (python3-smbus, python3-spidev, python3-rpi.gpio) rather than pip.
+# Treat this as a starting point for porting to your own hardware, not a
+# guaranteed one-shot `pip install -r requirements.txt`.
+
+Flask
+Flask-Cors
+miniaudio
+numpy
+PyAudio
+requests
+pyserial
+smbus2
+spidev
+RPi.GPIO
