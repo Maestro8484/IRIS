@@ -1,0 +1,4 @@
+# /etc/cron.d/iris-logs
+# Deploy to Pi4: sudo cp iris-logs.cron /etc/cron.d/iris-logs
+# Changed from */15 to */5 — must run faster than journald's ~35min rotation window.
+*/5 * * * * root /home/pi/scripts/iris_log_export.sh

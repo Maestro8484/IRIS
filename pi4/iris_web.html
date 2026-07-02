@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IRIS Control Panel</title>
+<link rel="stylesheet" href="/iris_web.css">
+</head>
+<body>
+<header>
+  <h1>IRIS</h1>
+  <div class="status">
+    <span><span class="dot" id="dot-assistant"></span> <span id="lbl-assistant">assistant</span></span>
+    <span id="lbl-sleep-hdr" style="color:var(--indigo);display:none">sleeping</span>
+    <span id="lbl-temp">--C</span>
+    <span id="lbl-uptime">--</span>
+  </div>
+</header>
+<nav>
+  <button class="active" onclick="tab('audio',this)">Audio</button>
+  <button onclick="tab('wakeword',this)">Wake Word</button>
+  <button onclick="tab('voice',this)">Voice</button>
+  <button onclick="tab('conversation',this)">Conversation</button>
+  <button onclick="tab('eyes',this)">Eyes</button>
+  <button onclick="tab('sleep',this);_saTabHook()">Sleep</button>
+  <button onclick="tab('lights',this)">Lights</button>
+  <button onclick="tab('gandalf',this)">Gandalf AI</button>
+  <button onclick="tab('logs',this)">Logs</button>
+  <button onclick="tab('system',this)">System</button>
+  <button onclick="tab('chat',this)">Chat</button>
+  <button onclick="tab('bench',this)">Bench</button>
+  <button onclick="tab('gestures',this)">Gestures</button>
+  <button onclick="tab('ogle_cal',this);_oglecalTabHook()">Vision Cal</button>
+  <button onclick="tab('soundboard',this);fetchSoundboard()">Soundboard</button>
+  <a href="/help" target="_blank" style="margin-left:auto;padding:5px 12px;color:var(--accent);border:1px solid var(--accent);border-radius:4px;text-decoration:none;font-size:.85em;align-self:center;white-space:nowrap">? Help</a>
+</nav>
+
+<!-- SD persistence bar — always visible -->
+<div class="sd-bar checking" id="sd-bar">
+  <span id="sd-status-text">checking SD...</span>
+  <button class="btn-persist" onclick="persistToSD()">Persist to SD</button>
+</div>
+
+<!-- AUDIO -->
+<div class="section active" id="sec-audio">
+  <div class="card">
+    <h2>Adult Recording</h2>
+    <div class="field-row"><label>Max record (s)</label><input type="number" id="RECORD_SECONDS" step="1"></div>
+    <div class="field-row"><label>Silence timeout (s)</label><input type="number" id="SILENCE_SECS" step="0.1"></div>
+    <div class="field-row"><label>Silence RMS gate</label><input type="number" id="SILENCE_RMS" step="10"></div>
+    <button class="btn btn-primary" onclick="saveFields(['RECORD_SECONDS','SILENCE_SECS','SILENCE_RMS'])">Save Audio Settings</button>
+  </div>
+  <div class="card">
+    <h2>Kids Mode Recording</h2>
+    <div class="field-row"><label>Max record (s)</label><input type="number" id="KIDS_RECORD_SECONDS" step="1"></div>
+    <div class="field-row"><label>Silence timeout (s)</label><input type="number" id="KIDS_SILENCE_SECS" step="0.1"></div>
+    <div class="field-row"><label>Silence RMS gate</label><input type="number" id="KIDS_SILENCE_RMS" step="10"></div>
+    <button class="btn btn-primary" onclick="saveFields(['KIDS_RECORD_SECONDS','KIDS_SILENCE_SECS','KIDS_SILENCE_RMS'])">Save Kids Audio</button>
+  </div>
+</div>
+
+<!-- WAKE WORD -->
+<div class="section" id="sec-wakeword">
+  <div class="card">
+    <h2>OpenWakeWord</h2>
+    <p class="hint">Threshold 0.0–1.0. Higher = fewer false positives. Active model: <span id="wakeword-model-label" style="color:var(--blue)">—</span></p>
+    <div class="field-row"><label>Threshold</label><input type="number" id="OWW_THRESHOLD" step="0.01" min="0" max="1"></div>
+    <div class="field-row"><label>Post-wake drain (s)</label><input type="number" id="OWW_DRAIN_SECS" step="0.05" min="0.05" max="1"></div>
+    <p class="hint" style="margin-bottom:8px">Drain: audio flushed after wakeword before recording begins (default 0.15s). Lower = faster response, higher = less wakeword bleed-in.</p>
+    <button class="btn btn-primary" onclick="saveFields(['OWW_THRESHOLD','OWW_DRAIN_SECS'])">Save</button>
+  </div>
+</div>
+
+<!-- VOICE -->
+<div class="section" id="sec-voice">
+  <div class="card">
+    <h2>Kokoro TTS (Primary)</h2>
+    <p class="hint">Primary TTS engine. Neural multi-voice synthesis. Runs on GandalfAI (Docker, port 8004).</p>
+    <div class="field-row">
+      <label>Kokoro enabled</label>
+      <select id="KOKORO_ENABLED">
+        <option value="true">Yes - use Kokoro</option>
+        <option value="false">No - skip to fallback</option>
+      </select>
+    </div>
+    <div class="field-row">
+      <label>Voice</label>
+      <select id="KOKORO_VOICE" style="width:260px"><option>Loading...</option></select>
+      <button class="btn btn-sm" onclick="loadKokoroVoices()" style="background:var(--input-bg);border:1px solid var(--border)">Refresh</button>
+    </div>
+    <div class="field-row">
+      <label>Speech rate (KOKORO_SPEED)</label>
+      <input type="number" id="KOKORO_SPEED" step="0.05" min="0.5" max="2.0" style="width:80px">
+      <span style="font-size:12px;color:var(--muted);margin-left:6px">0.5–2.0 &nbsp;(default 1.0, 1.15 recommended)</span>
+    </div>
+    <p class="hint" style="margin-bottom:8px">Voice name sent to Kokoro API. <a href="http://192.168.1.3:8004/web" target="_blank" style="color:var(--blue)">Open Kokoro Web UI</a></p>
+    <button class="btn btn-primary" onclick="saveKokoroSettings()">Save Kokoro Settings</button>
+  </div>
+  <div class="card">
+    <h2>Piper TTS (Fallback)</h2>
+    <p class="hint">Offline TTS. Used when Kokoro is unavailable. No configurable settings.</p>
+  </div>
+</div>
+
+<!-- CONVERSATION -->
+<div class="section" id="sec-conversation">
+  <div class="card">
+    <h2>Follow-up &amp; Context</h2>
+    <div class="field-row"><label>Follow-up timeout (s)</label><input type="number" id="FOLLOWUP_TIMEOUT" step="1"></div>
+    <div class="field-row"><label>Kids follow-up timeout (s)</label><input type="number" id="KIDS_FOLLOWUP_TIMEOUT" step="1"></div>
+    <div class="field-row"><label>Max follow-up turns</label><input type="number" id="FOLLOWUP_MAX_TURNS" step="1"></div>
+    <div class="field-row"><label>Context timeout (s)</label><input type="number" id="CONTEXT_TIMEOUT_SECS" step="30"></div>
+    <button class="btn btn-primary" onclick="saveFields(['FOLLOWUP_TIMEOUT','KIDS_FOLLOWUP_TIMEOUT','FOLLOWUP_MAX_TURNS','CONTEXT_TIMEOUT_SECS'])">Save</button>
+  </div>
+  <div class="card">
+    <h2>Response Length Tiers</h2>
+    <p class="hint">Token budget per tier. IRIS picks the tier automatically based on the question. Changes take effect on the next response — no restart needed.</p>
+    <div class="field-row"><label>SHORT (greeting / yes-no)</label><input type="number" id="NUM_PREDICT_SHORT" step="10" min="10" max="2000"></div>
+    <div class="field-row"><label>MEDIUM (explanations)</label><input type="number" id="NUM_PREDICT_MEDIUM" step="10" min="10" max="2000"></div>
+    <div class="field-row"><label>LONG (stories / lists)</label><input type="number" id="NUM_PREDICT_LONG" step="10" min="10" max="2000"></div>
+    <div class="field-row"><label>MAX (essays / code)</label><input type="number" id="NUM_PREDICT_MAX" step="10" min="10" max="2000"></div>
+    <div class="field-row"><label>TTS char cap</label><input type="number" id="TTS_MAX_CHARS" step="50" min="100" max="4000"></div>
+    <p class="hint" style="margin-bottom:8px">TTS cap truncates at sentence boundary before synthesis (~5–8 sentences at 900 chars).</p>
+    <button class="btn btn-primary" onclick="saveFields(['NUM_PREDICT_SHORT','NUM_PREDICT_MEDIUM','NUM_PREDICT_LONG','NUM_PREDICT_MAX','TTS_MAX_CHARS'])">Save Tiers</button>
+  </div>
+</div>
+
+<!-- EYES -->
+<div class="section" id="sec-eyes">
+  <div class="card">
+    <h2>Eye Style</h2>
+    <p class="hint" style="margin-bottom:12px">Sends EYE:n to Teensy. All styles selectable; emotions temporarily override flame &amp; hypnoRed.</p>
+    <div class="eyes-grid">
+      <button class="btn-eye" onclick="sendTeensy('EYE:0')">0 - Nordic Blue</button>
+      <button class="btn-eye" onclick="sendTeensy('EYE:1')">1 - Flame</button>
+      <button class="btn-eye" onclick="sendTeensy('EYE:2')">2 - Hypno Red</button>
+      <button class="btn-eye" onclick="sendTeensy('EYE:3')">3 - Hazel</button>
+      <button class="btn-eye" onclick="sendTeensy('EYE:4')">4 - Blue Flame 1</button>
+      <button class="btn-eye" onclick="sendTeensy('EYE:5')">5 - Dragon</button>
+      <button class="btn-eye" onclick="sendTeensy('EYE:6')">6 - Striking Blue</button>
+    </div>
+    <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span style="color:var(--muted);font-size:13px">Default eye on startup:</span>
+      <select id="default-eye-sel" style="background:#1a1a2e;border:1px solid var(--border);color:var(--fg);padding:5px 8px;border-radius:4px;font-size:13px">
+        <option value="0">0 - Nordic Blue</option>
+        <option value="1">1 - Flame</option>
+        <option value="2">2 - Hypno Red</option>
+        <option value="3">3 - Hazel</option>
+        <option value="4">4 - Blue Flame 1</option>
+        <option value="5">5 - Dragon</option>
+        <option value="6">6 - Striking Blue</option>
+      </select>
+      <button class="btn btn-sm" onclick="saveDefaultEye()">Save Default</button>
+      <button class="btn btn-sm" onclick="persistToSD()" style="background:#1e1e30;border-color:var(--border)">Persist to SD</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Emotion Test</h2>
+    <p class="hint" style="margin-bottom:12px">Fires EMOTION:x + MOUTH:n using the active Emotion Display mapping below.</p>
+    <div class="emo-grid">
+      <button class="btn-emo" onclick="sendEmotion('NEUTRAL',0)">NEUTRAL</button>
+      <button class="btn-emo" onclick="sendEmotion('HAPPY',1)">HAPPY</button>
+      <button class="btn-emo" onclick="sendEmotion('CURIOUS',2)">CURIOUS</button>
+      <button class="btn-emo" onclick="sendEmotion('ANGRY',3)">ANGRY</button>
+      <button class="btn-emo" onclick="sendEmotion('SLEEPY',4)">SLEEPY</button>
+      <button class="btn-emo" onclick="sendEmotion('SURPRISED',5)">SURPRISED</button>
+      <button class="btn-emo" onclick="sendEmotion('SAD',6)">SAD</button>
+      <button class="btn-emo" onclick="sendEmotion('CONFUSED',7)">CONFUSED</button>
+      <button class="btn-emo" onclick="sendEmotion('AMUSED',2)">AMUSED</button>
+    </div>
+  </div>
+
+  <!-- Emotion Display Mapping -->
+  <div class="card">
+    <h2>Emotion Display Mapping</h2>
+    <p class="hint" style="margin-bottom:4px">Assign eye style and mouth style per emotion. Saved to <code>iris_config.json</code>; used by the assistant and by Emotion Test buttons above.</p>
+    <p class="hint" style="margin-bottom:12px">Note: ANGRY always shows Flame and CONFUSED always shows Hypno Red during the emotion (firmware timer ~9s/7s). The eye setting here controls which eye is sent beforehand and where the display reverts.</p>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr>
+            <th style="text-align:left;padding:4px 8px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)">Emotion</th>
+            <th style="text-align:left;padding:4px 8px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)">Eye Style</th>
+            <th style="text-align:left;padding:4px 8px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)">Mouth Style</th>
+            <th style="padding:4px 8px;border-bottom:1px solid var(--border)"></th>
+          </tr>
+        </thead>
+        <tbody id="emotion-map-tbl"></tbody>
+      </table>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+      <button class="btn btn-primary" onclick="saveEmotionMap()">Save Mapping</button>
+      <button class="btn" onclick="loadEmotionMap()">Reload</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>TFT Mouth</h2>
+    <p class="hint" style="margin-bottom:12px">Sends MOUTH:x directly to the ILI9341 TFT mouth.</p>
+    <div class="emo-grid">
+      <button class="btn-mouth" onclick="sendTeensy('MOUTH:0')">0 - Neutral</button>
+      <button class="btn-mouth" onclick="sendTeensy('MOUTH:1')">1 - Happy</button>
+      <button class="btn-mouth" onclick="sendTeensy('MOUTH:2')">2 - Curious</button>
+      <button class="btn-mouth" onclick="sendTeensy('MOUTH:3')">3 - Angry</button>
+      <button class="btn-mouth" onclick="sendTeensy('MOUTH:4')">4 - Sleepy</button>
+      <button class="btn-mouth" onclick="sendTeensy('MOUTH:5')">5 - Surprised</button>
+      <button class="btn-mouth" onclick="sendTeensy('MOUTH:6')">6 - Sad</button>
+      <button class="btn-mouth" onclick="sendTeensy('MOUTH:7')">7 - Confused</button>
+      <button class="btn-mouth" onclick="sendTeensy('MOUTH:8')" style="color:var(--muted)">8 - Sleep (blank)</button>
+      <button class="btn-mouth" onclick="sendTeensy('MOUTH:9')" style="border-color:#f472b6;color:#f472b6">9 - Silly (tongue)</button>
+    </div>
+    <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span style="color:var(--muted);font-size:12px;min-width:110px">Idle animations:</span>
+        <button class="btn btn-sm" onclick="sendTeensy('IDLE:START')" style="border-color:var(--blue);color:var(--blue)">Start Idle</button>
+        <button class="btn btn-sm" onclick="sendTeensy('IDLE:STOP')"  style="border-color:var(--border)">Stop Idle</button>
+      </div>
+      <p class="hint" style="margin-top:6px">Enables BREATHE / BLINK / TWITCH / BOING. Silly (9) auto-starts and wags tongue after 2 s. Requires S87 firmware flashed.</p>
+    </div>
+  </div>
+</div>
+
+<!-- SLEEP -->
+<div class="section" id="sec-sleep">
+
+  <!-- Sleep Control -->
+  <div class="card">
+    <h2>Sleep / Wake</h2>
+    <div class="sleep-panel">
+      <div class="sleep-indicator">
+        <div class="sleep-dot" id="sleep-dot"></div>
+        <span id="sleep-label">Checking...</span>
+      </div>
+      <div class="sleep-btns">
+        <button class="btn-sleep" id="btn-sleep" onclick="triggerSleep()">Sleep</button>
+        <button class="btn-wake" id="btn-wake" onclick="triggerWake()">Wake</button>
+      </div>
+    </div>
+    <p class="hint">Sleep: starfield on both eyes, snore mouth animation, reduced LED brightness. Wake restores eyes + NEUTRAL emotion. State syncs with voice commands and cron schedule.</p>
+    <p class="hint" style="margin-top:6px">Auto-schedule: Sleep at 9:00 PM / Wake at 7:30 AM (cron)</p>
+  </div>
+
+  <!-- TFT Mouth Intensity -->
+  <div class="card">
+    <h2>TFT Mouth Intensity</h2>
+    <p class="hint">ILI9341 backlight PWM, level 0–15 (logarithmic). "Apply Now" persists all three and immediately pushes the level matching the current state (idle when awake, else sleep). Idle is the resting level shown between interactions — keep it visible so the random idle animations read.</p>
+    <div class="field-row">
+      <label>Awake intensity (0–15)</label>
+      <input type="range" id="MOUTH_INTENSITY_AWAKE" min="0" max="15" step="1" value="8"
+             style="width:180px;accent-color:#a78bfa;height:6px;cursor:pointer"
+             oninput="document.getElementById('mouth-awake-display').textContent=this.value">
+      <span id="mouth-awake-display" style="width:24px;color:var(--text);font-size:13px;flex-shrink:0">8</span>
+    </div>
+    <div class="field-row">
+      <label>Idle intensity (0–15)</label>
+      <input type="range" id="MOUTH_INTENSITY_IDLE" min="0" max="15" step="1" value="8"
+             style="width:180px;accent-color:#34d399;height:6px;cursor:pointer"
+             oninput="document.getElementById('mouth-idle-display').textContent=this.value">
+      <span id="mouth-idle-display" style="width:24px;color:var(--text);font-size:13px;flex-shrink:0">8</span>
+    </div>
+    <div class="field-row">
+      <label>Sleep intensity (0–15)</label>
+      <input type="range" id="MOUTH_INTENSITY_SLEEP" min="0" max="15" step="1" value="1"
+             style="width:180px;accent-color:var(--indigo);height:6px;cursor:pointer"
+             oninput="document.getElementById('mouth-sleep-display').textContent=this.value">
+      <span id="mouth-sleep-display" style="width:24px;color:var(--text);font-size:13px;flex-shrink:0">1</span>
+    </div>
+    <button class="btn btn-primary" onclick="saveMouthIntensity()">Save &amp; Apply Now</button>
+  </div>
+
+  <!-- APA102 Sleep LEDs (moved from Lights tab) -->
+  <div class="card">
+    <h2>APA102 Sleep LEDs (indigo breathe)</h2>
+    <p class="hint">Active while IRIS is sleeping. Defaults: floor=1, peak=8. Changes take effect on the next sleep cycle — no restart needed.</p>
+    <div class="field-row"><label>Peak brightness (0–255)</label><input type="number" id="LED_SLEEP_PEAK" step="1" min="0" max="255"></div>
+    <div class="field-row"><label>Floor brightness (0–255)</label><input type="number" id="LED_SLEEP_FLOOR" step="1" min="0" max="255"></div>
+    <div class="field-row"><label>Cycle period (s)</label><input type="number" id="LED_SLEEP_PERIOD" step="0.5" min="1" max="60"></div>
+    <button class="btn btn-primary" onclick="saveFields(['LED_SLEEP_PEAK','LED_SLEEP_FLOOR','LED_SLEEP_PERIOD'])">Save Sleep LEDs</button>
+  </div>
+
+  <!-- Sleep Animation Controls -->
+  <div class="card" id="sleep-anim-card">
+    <h2>Sleep Animation</h2>
+    <p class="hint">Tune the cosmic starfield scene on the eye and mouth displays. Changes take effect on the next sleep cycle. Persist to SD to survive reboot.</p>
+
+    <details open style="margin-bottom:12px">
+      <summary style="cursor:pointer;color:var(--blue);font-size:13px;font-weight:600;margin-bottom:8px">Stars &amp; Warps</summary>
+      <div id="sa-stars-warps"></div>
+    </details>
+
+    <details open style="margin-bottom:12px">
+      <summary style="cursor:pointer;color:var(--blue);font-size:13px;font-weight:600;margin-bottom:8px">Shooting Stars</summary>
+      <div id="sa-shoots"></div>
+    </details>
+
+    <details open style="margin-bottom:12px">
+      <summary style="cursor:pointer;color:var(--blue);font-size:13px;font-weight:600;margin-bottom:8px">Objects (Moon &amp; Saturn)</summary>
+      <div id="sa-objects"></div>
+    </details>
+
+    <details open style="margin-bottom:12px">
+      <summary style="cursor:pointer;color:var(--blue);font-size:13px;font-weight:600;margin-bottom:8px">Mouth (Waveform &amp; ZZZ)</summary>
+      <div id="sa-mouth"></div>
+    </details>
+  </div>
+</div>
+
+<!-- LIGHTS -->
+<div class="section" id="sec-lights">
+  <div class="card">
+    <h2>APA102 — Idle (cyan breathe)</h2>
+    <p class="hint">Active when IRIS is listening or idle. Changes take effect after restarting the assistant.</p>
+    <div class="field-row"><label>Peak brightness (0–255)</label><input type="number" id="LED_IDLE_PEAK" step="1" min="0" max="255"></div>
+    <div class="field-row"><label>Floor brightness (0–255)</label><input type="number" id="LED_IDLE_FLOOR" step="1" min="0" max="255"></div>
+    <div class="field-row"><label>Cycle period (s)</label><input type="number" id="LED_IDLE_PERIOD" step="0.5" min="1" max="30"></div>
+    <button class="btn btn-primary" onclick="saveFields(['LED_IDLE_PEAK','LED_IDLE_FLOOR','LED_IDLE_PERIOD'])">Save Idle LEDs</button>
+  </div>
+  <div class="card">
+    <h2>APA102 — Kids Mode (yellow breathe)</h2>
+    <p class="hint">Active in kids mode. Changes take effect after restarting the assistant.</p>
+    <div class="field-row"><label>Peak brightness (0–255)</label><input type="number" id="LED_KIDS_PEAK" step="1" min="0" max="255"></div>
+    <div class="field-row"><label>Cycle period (s)</label><input type="number" id="LED_KIDS_PERIOD" step="0.5" min="1" max="30"></div>
+    <button class="btn btn-primary" onclick="saveFields(['LED_KIDS_PEAK','LED_KIDS_PERIOD'])">Save Kids LEDs</button>
+  </div>
+</div>
+
+<!-- GANDALF AI -->
+<div class="section" id="sec-gandalf">
+  <div class="card">
+    <h2>Ollama Models</h2>
+    <div class="field-row"><label>Adult model</label><input type="text" id="OLLAMA_MODEL_ADULT" style="width:200px"></div>
+    <div class="field-row"><label>Kids model</label><input type="text" id="OLLAMA_MODEL_KIDS" style="width:200px"></div>
+    <button class="btn btn-primary" onclick="saveFields(['OLLAMA_MODEL_ADULT','OLLAMA_MODEL_KIDS'])">Save Models</button>
+  </div>
+  <div class="card">
+    <h2>Loaded Models (VRAM)</h2>
+    <button class="btn btn-sm" style="margin-bottom:10px;background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="loadVram()">Refresh</button>
+    <div class="vram-box" id="vram-box">Click refresh to load...</div>
+  </div>
+</div>
+
+<!-- LOGS -->
+<div class="section" id="sec-logs">
+  <div class="card">
+    <h2>IRIS Event Log</h2>
+    <p class="hint" style="margin-bottom:10px">Structured pipeline events. <span style="color:#f97316">DRIFT</span> = boilerplate/formal opener detected in LLM output. <span style="color:var(--red)">STOP</span> = STOP-phrase gate events. False wakewords appear as WAKE with no following HEARD.</p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="fetchLogs()">Refresh</button>
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer">
+        <input type="checkbox" id="logs-auto" onchange="toggleLogsAuto(this)"> auto 15s
+      </label>
+      <span id="log-count" style="font-size:12px;color:var(--muted);margin-left:auto"></span>
+    </div>
+    <div class="log-filter-bar">
+      <button class="btn-filter active" data-cat="all"      onclick="setLogFilter('all',this)">All</button>
+      <button class="btn-filter"         data-cat="wakeword" onclick="setLogFilter('wakeword',this)">Wakeword</button>
+      <button class="btn-filter"         data-cat="stt"      onclick="setLogFilter('stt',this)">Heard</button>
+      <button class="btn-filter"         data-cat="route"    onclick="setLogFilter('route',this)">Route</button>
+      <button class="btn-filter"         data-cat="llm"      onclick="setLogFilter('llm',this)">LLM</button>
+      <button class="btn-filter"         data-cat="tts"      onclick="setLogFilter('tts',this)">Spoken</button>
+      <button class="btn-filter f-stop"  data-cat="stop"     onclick="setLogFilter('stop',this)">STOP</button>
+      <button class="btn-filter f-drift" data-cat="drift"    onclick="setLogFilter('drift',this)">Drift</button>
+      <button class="btn-filter f-error"   data-cat="error"   onclick="setLogFilter('error',this)">Errors</button>
+      <button class="btn-filter f-gesture" data-cat="gesture" onclick="setLogFilter('gesture',this)">Gesture</button>
+    </div>
+    <div class="log-events" id="log-events">
+      <div style="color:var(--muted);padding:16px;text-align:center">Click Refresh to load</div>
+    </div>
+  </div>
+</div>
+
+<!-- SYSTEM -->
+<div class="section" id="sec-system">
+  <div class="card">
+    <h2>Status</h2>
+    <div class="field-row"><label>Assistant service</label><span id="sys-running" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>Sleep state</label><span id="sys-sleep" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>CPU temp</label><span id="sys-temp">--</span></div>
+    <div class="field-row"><label>Uptime</label><span id="sys-uptime">--</span></div>
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="btn btn-primary" onclick="restartAssistant()">Restart IRIS Assistant</button>
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="pollStatus()">Refresh Status</button>
+    </div>
+  </div>
+  <!-- Resource Monitor (RD-032) -->
+  <div class="card">
+    <h2>Resource Monitor</h2>
+    <p class="hint" style="margin-bottom:12px">Live snapshot (auto-refresh ~10 s) — computed on request, never logged (RD-031). Disk-first early warning so a space/journal runout can't recur silently. Sparkline = journal size over the last 60 min from <code style="color:var(--blue)">res_trend.csv</code>.</p>
+    <div class="field-row"><label>Overlay root (/)</label><span id="ss-overlay" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>SD card (/media/root-ro)</label><span id="ss-sd" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>Journal size</label><span id="ss-journal" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>/home/pi/logs</label><span id="ss-logs" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>Load (1/5/15m)</label><span id="ss-load" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>Memory</label><span id="ss-mem" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>CPU temp</label><span id="ss-temp" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>Throttle flags</label><span id="ss-throttle" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>Uptime</label><span id="ss-uptime" style="color:var(--muted)">--</span></div>
+    <div style="margin-top:10px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Journal trend (last 60 min)</div>
+      <canvas id="ss-spark" width="320" height="44" style="width:100%;max-width:340px;height:44px;background:var(--input-bg);border:1px solid var(--border);border-radius:4px"></canvas>
+    </div>
+    <div style="margin-top:12px">
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="pollSysstat()">Refresh Now</button>
+    </div>
+  </div>
+
+  <!-- OGLE Vision (RD-033) — status of the standalone face-tracking camera -->
+  <div class="card">
+    <h2>OGLE Vision <span id="ogle-dot" style="font-size:12px;color:var(--muted)">&#9679; checking</span></h2>
+    <p class="hint" style="margin-bottom:12px">Standalone ESP32-S3 face-tracker (replaces the dead Person Sensor, RD-033). Proxied via <code style="color:var(--blue)">/api/ogle</code> from <code style="color:var(--blue)">192.168.1.202</code> — computed on request, never logged. Gaze data still flows over USB-CDC; this is the management plane. Auto-refresh ~10 s.</p>
+
+    <!-- live tracking visualizer: face center as a dot + fading trail in 240x240 frame -->
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+      <div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Tracking (240&times;240 frame)</div>
+        <canvas id="ogle-track" width="180" height="180" style="width:180px;height:180px;background:var(--input-bg);border:1px solid var(--border);border-radius:4px"></canvas>
+        <div id="ogle-gaze" style="font-size:11px;margin-top:4px;color:var(--muted)">gaze: &mdash;</div>
+      </div>
+      <div style="flex:1;min-width:200px">
+        <div class="field-row"><label>Tracking</label><span id="ogle-present" style="color:var(--muted)">--</span></div>
+        <div class="field-row"><label>Confidence</label><span id="ogle-conf" style="color:var(--muted)">--</span></div>
+        <div class="field-row"><label>Size (proximity)</label><span id="ogle-size" style="color:var(--muted)">--</span></div>
+        <div class="field-row"><label>Facing</label><span id="ogle-facing" style="color:var(--muted)">--</span></div>
+        <div class="field-row"><label>Faces in frame</label><span id="ogle-count" style="color:var(--muted)">--</span></div>
+        <div class="field-row"><label>Last face age</label><span id="ogle-age" style="color:var(--muted)">--</span></div>
+        <div class="field-row"><label>FPS</label><span id="ogle-fps" style="color:var(--muted)">--</span></div>
+        <div class="field-row"><label>WiFi RSSI</label><span id="ogle-rssi" style="color:var(--muted)">--</span></div>
+        <div class="field-row"><label>Firmware / uptime</label><span id="ogle-fw" style="color:var(--muted)">--</span></div>
+      </div>
+    </div>
+    <div style="margin-top:8px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">FPS trend</div>
+      <canvas id="ogle-spark" width="320" height="36" style="width:100%;max-width:340px;height:36px;background:var(--input-bg);border:1px solid var(--border);border-radius:4px"></canvas>
+    </div>
+
+    <!-- runtime tuning: live, persisted to OGLE NVS, no reflash -->
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="font-size:12px;color:var(--text);margin-bottom:8px">Live tuning <span class="hint">(applied on the node + persisted to NVS — no reflash)</span></div>
+      <div class="field-row"><label>Confidence <span id="ogle-conf-val" style="color:var(--blue)">0.50</span></label>
+        <input type="range" id="ogle-conf-slider" min="0.10" max="1.00" step="0.05" value="0.50" oninput="document.getElementById('ogle-conf-val').textContent=(+this.value).toFixed(2)"></div>
+      <div class="field-row"><label>Facing threshold <span id="ogle-facing-val" style="color:var(--blue)">0.38</span></label>
+        <input type="range" id="ogle-facing-slider" min="0.00" max="1.00" step="0.02" value="0.38" oninput="document.getElementById('ogle-facing-val').textContent=(+this.value).toFixed(2)"></div>
+      <div class="field-row"><label>Detection mode</label>
+        <select id="ogle-mode-select" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px">
+          <option value="accurate">accurate (landmarks, ~80ms)</option>
+          <option value="fast">fast (bbox only, ~50ms)</option>
+        </select></div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" onclick="applyOgleConfig()">Apply Tuning</button>
+        <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="pollOgle()">Refresh Now</button>
+        <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--red);color:var(--red)" onclick="rebootOgle()">Reboot Node</button>
+      </div>
+      <div id="ogle-msg" style="font-size:11px;margin-top:6px;color:var(--muted)"></div>
+    </div>
+  </div>
+
+  <!-- POST diagnostic card -->
+  <div class="card">
+    <h2>Power-On Self-Test (POST)</h2>
+    <p class="hint" style="margin-bottom:12px">Runs the 5-layer IRIS diagnostic: hardware presence, network services, Teensy display exercise, pipeline smoke, config integrity. Takes 10–120 s. Results also written to <code style="color:var(--blue)">/home/pi/logs/iris_post.log</code>.</p>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px">
+      <button class="btn btn-primary" id="btn-post" onclick="runPost()">Run POST Diagnostic</button>
+      <span id="post-status" style="font-size:12px;color:var(--muted)">idle</span>
+    </div>
+    <div id="post-result" style="display:none">
+      <div id="post-verdict" style="font-size:13px;font-weight:600;margin-bottom:10px"></div>
+      <div style="overflow-x:auto">
+        <table class="bench-table" style="font-size:11px">
+          <thead><tr>
+            <th style="text-align:left;width:40px">Layer</th>
+            <th style="text-align:left">Check</th>
+            <th style="text-align:left;width:56px">Result</th>
+            <th style="text-align:left">Detail</th>
+          </tr></thead>
+          <tbody id="post-rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Config Persistence</h2>
+    <p class="hint" style="margin-bottom:12px">Config saves go to RAM (<code style="color:var(--blue)">iris_config.json</code>) and survive assistant restarts, but are <strong>lost on reboot</strong> unless persisted to SD. The status bar above always shows current sync state.</p>
+    <div class="field-row"><label>SD card status</label><span id="sys-sd-status" style="color:var(--muted)">--</span></div>
+    <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+      <button class="btn btn-primary" onclick="persistToSD()">Persist Config to SD</button>
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="checkSDStatus()">Check SD Status</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Speaker Volume</h2>
+    <p class="hint">wm8960 Class D direct output. Range 0–127. Takes effect immediately.</p>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px">
+      <input type="range" id="vol-slider" min="0" max="127" value="110"
+             style="flex:1;accent-color:var(--blue);height:6px;cursor:pointer"
+             oninput="document.getElementById('vol-display').textContent=this.value+' ('+Math.round(this.value/127*100)+'%)'">
+      <span id="vol-display" style="width:64px;text-align:right;color:var(--text);font-size:13px;flex-shrink:0">110 (87%)</span>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn btn-primary" onclick="setVolume()">Set Volume</button>
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="refreshVolume()">Refresh</button>
+    </div>
+    <div class="field-row" style="margin-top:4px">
+      <label>Volume ceiling (VOL_MAX)</label>
+      <input type="number" id="VOL_MAX" step="1" min="60" max="127" style="width:80px">
+    </div>
+    <p class="hint" style="margin-bottom:8px">Hard ceiling used by voice volume commands. 127 = no ceiling.</p>
+    <button class="btn btn-primary" onclick="saveFields(['VOL_MAX'])">Save Ceiling</button>
+  </div>
+</div>
+
+<!-- CHAT -->
+<div class="section" id="sec-chat">
+  <div class="card">
+    <h2>Text Chat with IRIS</h2>
+    <p class="hint" style="margin-bottom:10px">Send text to IRIS, or use <strong style="color:var(--amber)">Speak verbatim</strong> to puppet IRIS's voice directly — no LLM involved.</p>
+    <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <span style="color:var(--muted);font-size:12px;margin-right:4px">Mode:</span>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px">
+          <input type="radio" name="chat-mode" value="silent" checked onchange="updateChatMode(this)"> Text only
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px">
+          <input type="radio" name="chat-mode" value="speak" onchange="updateChatMode(this)"> LLM + Speak
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px">
+          <input type="radio" name="chat-mode" value="verbatim" onchange="updateChatMode(this)"> <span style="color:var(--amber)">Speak verbatim</span>
+        </label>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <span style="color:var(--muted);font-size:12px;margin-right:4px">Persona:</span>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px">
+          <input type="radio" name="chat-persona" value="adult" checked> Adult
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px">
+          <input type="radio" name="chat-persona" value="kids"> Kids
+        </label>
+      </div>
+    </div>
+    <div id="chat-mode-hint" style="font-size:12px;color:var(--muted);margin-bottom:10px;min-height:16px"></div>
+    <div class="chat-box" id="chat-box"></div>
+    <div class="chat-input">
+      <textarea id="chat-input" placeholder="Ask IRIS anything, or type text to speak verbatim..." onkeydown="if(event.ctrlKey&&event.key==='Enter')sendChat()"></textarea>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <button class="btn btn-primary" onclick="sendChat()">Send <span style="font-size:11px;opacity:0.7">(Ctrl+Enter)</span></button>
+        <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--muted)" onclick="clearChat()">Clear</button>
+      </div>
+    </div>
+    <p class="hint" style="margin-top:8px;color:#6b7280">Note: "LLM + Speak" and voice pipeline TTS can overlap if both are active simultaneously. Use <strong>Speak verbatim</strong> when IRIS is idle to avoid conflicts.</p>
+  </div>
+
+  <div class="card">
+    <h2>Vision Demo — Pi Camera + Vision Model</h2>
+    <p class="hint" style="margin-bottom:10px">Captures a frame from the Pi camera and sends it to the vision model. Use preset prompts or type a custom one. Requires camera enabled and GandalfAI online.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      <button class="btn btn-sm" onclick="sendVision('Describe in detail what you see.')">Describe what you see</button>
+      <button class="btn btn-sm" onclick="sendVision('Who is the person in front of you? Describe their appearance.')">Who am I?</button>
+      <button class="btn btn-sm" onclick="sendVision('What object am I holding? Describe it.')">What am I holding?</button>
+      <button class="btn btn-sm" onclick="sendVision('Read any text visible in the image and repeat it exactly.')">Read text</button>
+      <button class="btn btn-sm" onclick="sendVision('What is the general scene and environment around you?')">Describe scene</button>
+    </div>
+    <div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:10px">
+      <div style="flex:1">
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Custom prompt</label>
+        <input type="text" id="vision-prompt" placeholder="Ask IRIS what it sees..."
+               style="width:100%;background:var(--input-bg);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:5px;font-size:13px"
+               onkeydown="if(event.key==='Enter')sendVision(document.getElementById('vision-prompt').value)">
+      </div>
+      <button class="btn btn-primary" onclick="sendVision(document.getElementById('vision-prompt').value)">Send</button>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);margin-bottom:10px;cursor:pointer">
+      <input type="checkbox" id="vision-speak"> Speak reply via Kokoro
+    </label>
+    <div id="vision-result" style="background:#0a0a0c;border:1px solid var(--border);border-radius:6px;padding:10px;min-height:60px;font-size:13px;color:var(--text);display:none;white-space:pre-wrap;line-height:1.6"></div>
+    <div id="vision-status" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+  </div>
+</div>
+
+<!-- BENCH -->
+<div class="section" id="sec-bench">
+  <!-- Turn Latency (RD-007 S158) -->
+  <div class="card">
+    <h2>Turn Latency</h2>
+    <p class="hint" style="margin-bottom:10px">Last 20 turns — wakeword to first speaker output (ms), from <code style="color:var(--blue)">iris_bench.jsonl</code>. Auto-refreshes every 30 s with the Bench tab.</p>
+    <canvas id="lt-spark" width="320" height="50" style="width:100%;max-width:340px;height:50px;background:var(--input-bg);border:1px solid var(--border);border-radius:4px"></canvas>
+    <div id="lt-breakdown" style="font-size:12px;color:var(--muted);margin-top:6px">—</div>
+  </div>
+  <div class="card">
+    <h2>Pipeline Timing</h2>
+    <p class="hint" style="margin-bottom:10px">Recording=capture duration &nbsp;&bull;&nbsp; Transcription=Whisper STT &nbsp;&bull;&nbsp; 1st LLM Chunk=latency to first token &nbsp;&bull;&nbsp; LLM Stream=full generation &nbsp;&bull;&nbsp; TTS Synth=voice synthesis &nbsp;&bull;&nbsp; Playback=audio duration &nbsp;&bull;&nbsp; To First Word=wakeword&rarr;speaker start &nbsp;&bull;&nbsp; End-to-End=wakeword&rarr;playback complete</p>
+    <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="fetchBench()">Refresh</button>
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer">
+        <input type="checkbox" id="bench-auto" onchange="toggleBenchAuto(this)"> auto every 15s
+      </label>
+      <span id="bench-count" style="font-size:12px;color:var(--muted);margin-left:auto"></span>
+    </div>
+    <div class="bench-wrap">
+      <table class="bench-table" id="bench-table">
+        <thead><tr>
+          <th>#</th><th>Time</th><th>Trigger</th><th>Tier</th><th>Token Limit</th>
+          <th>Recording</th><th>Transcription</th><th>1st LLM Chunk</th><th>LLM Stream</th><th>TTS Synth</th><th>Playback</th>
+          <th>To First Word</th><th>End-to-End</th><th>Tokens (Eval/Prompt)</th><th style="text-align:left">Transcript</th>
+        </tr></thead>
+        <tbody id="bench-body">
+          <tr><td colspan="15" style="text-align:center;color:var(--muted);padding:20px">Click Refresh to load</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Active Tuning Levers</h2>
+    <p class="hint" style="margin-bottom:8px">Live values from core/config + iris_config.json. Adjust via Conversation tab or iris_config.json.</p>
+    <div class="levers-row" id="bench-levers">&mdash;</div>
+  </div>
+</div>
+
+<!-- GESTURES -->
+<div class="section" id="sec-gestures">
+  <div class="card">
+    <h2>Gesture Activity Monitor <span class="hint" style="font-size:11px">(live — PAJ7620U2 raw detections)</span></h2>
+    <p class="hint" style="margin-bottom:10px">Per-direction hit counts from the current journal. Use this to <b>see which physical swipes the sensor actually detects</b>: if a direction stays at 0 while you swipe it, the PAJ7620U2 is not registering that motion (a sensitivity / field-of-view problem, not a mapping bug).</p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="loadGestureStats()">Refresh</button>
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer">
+        <input type="checkbox" id="gesture-stats-auto" onchange="toggleGestureStatsAuto(this)"> auto 3s</label>
+      <span id="gesture-stats-total" style="font-size:12px;color:var(--muted);margin-left:auto"></span>
+    </div>
+    <div id="gesture-stats-grid" class="gstats-grid">
+      <div style="color:var(--muted);padding:16px;text-align:center;grid-column:1/-1">Click Refresh to load</div>
+    </div>
+    <p class="hint" style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+      <b>For reliable detection (per DFRobot PAJ7620U2):</b> keep your hand <b>5–15&nbsp;cm</b> from the sensor (≤20&nbsp;cm max), swipe <b>deliberately and fully across</b> the sensor's field of view (a complete pass, not a flick), and pause briefly between gestures. A direction that consistently fails usually means the hand is leaving the sensor's cone before the swipe completes — re-aim or unblock that side of the sensor.</p>
+  </div>
+  <div class="card">
+    <h2>Gesture Sensor Mapping</h2>
+    <p class="hint">PAJ7620U2 gesture events (Teensy 4.0, /dev/ttyIRIS_SERVO). Map each gesture to an action. Changes take effect immediately — no restart needed.</p>
+    <p class="hint" style="margin-top:4px;margin-bottom:12px">Basic gestures: swipe direction. Extended gestures: push/pull toward sensor, rotate wrist CW/CCW.</p>
+    <div class="field-row" style="margin-top:4px">
+      <label>VOL+ (swipe up)</label>
+      <select id="gesture-VOL+"></select>
+    </div>
+    <div class="field-row">
+      <label>VOL- (swipe down)</label>
+      <select id="gesture-VOL-"></select>
+    </div>
+    <div class="field-row">
+      <label>STOP (swipe left)</label>
+      <select id="gesture-STOP"></select>
+    </div>
+    <div class="field-row">
+      <label>RIGHT (swipe right)</label>
+      <select id="gesture-RIGHT"></select>
+    </div>
+    <div class="field-row" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
+      <label>FORWARD (push toward sensor)</label>
+      <select id="gesture-FORWARD"></select>
+    </div>
+    <div class="field-row">
+      <label>BACKWARD (pull away from sensor)</label>
+      <select id="gesture-BACKWARD"></select>
+    </div>
+    <div class="field-row">
+      <label>CW (clockwise wrist rotation)</label>
+      <select id="gesture-CW"></select>
+    </div>
+    <div class="field-row">
+      <label>CCW (counter-clockwise rotation)</label>
+      <select id="gesture-CCW"></select>
+    </div>
+    <button class="btn btn-primary" style="margin-top:14px" onclick="saveGestureConfig()">Save Gesture Config</button>
+  </div>
+  <div class="card">
+    <h2>Gesture Event Log</h2>
+    <p class="hint" style="margin-bottom:10px">PAJ7620U2 events from Teensy 4.0 (/dev/ttyIRIS_SERVO). Newest events at top. History persists across reboots via SD daily logs.</p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="fetchGestureLog()">Refresh</button>
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer">
+        <input type="checkbox" id="gesture-log-auto" onchange="toggleGestureLogAuto(this)"> auto 30s
+      </label>
+      <span id="gesture-log-count" style="font-size:12px;color:var(--muted);margin-left:auto"></span>
+    </div>
+    <div class="log-events" id="gesture-log-events" style="height:300px">
+      <div style="color:var(--muted);padding:16px;text-align:center">Click Refresh to load</div>
+    </div>
+  </div>
+</div>
+
+<!-- VISION CAL (OGLE calibration tab) -->
+<div class="section" id="sec-ogle_cal">
+
+  <!-- Person Sensor live status (T4.1 eye-tracking sensor health/activity) -->
+  <div class="card">
+    <h2>Person Sensor Status <span class="hint" style="font-size:11px">(T4.1 eye tracking — live)</span></h2>
+    <p class="hint" style="margin-bottom:10px">Live health + face-tracking activity of the Teensy 4.1 Person Sensor (the sole eye-tracking source). Derived from the Teensy's I2C probe results and FACE:1/FACE:0 reports. <b>ABSENT</b> means the sensor is not answering on the I2C bus (loose/dead) — eyes cannot track until it is reseated.</p>
+    <div class="ps-status-row">
+      <span id="ps-status-dot" class="ps-dot ps-dot-unknown"></span>
+      <span id="ps-status-label" style="font-weight:600">Loading…</span>
+      <span id="ps-status-refresh" style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer">
+          <input type="checkbox" id="ps-status-auto" onchange="togglePsStatusAuto(this)"> auto 5s</label>
+        <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="loadPsStatus()">Refresh</button>
+      </span>
+    </div>
+    <div id="ps-status-stats" class="ps-stats"></div>
+    <h3 style="font-size:13px;margin:14px 0 6px;color:var(--muted)">Recent tracking events</h3>
+    <div class="log-events" id="ps-status-events" style="height:180px">
+      <div style="color:var(--muted);padding:16px;text-align:center">Loading…</div>
+    </div>
+  </div>
+
+  <!-- Sensor LED indicators (liveness) -->
+  <div class="card">
+    <h2>Sensor LED Indicators <span class="hint" style="font-size:11px">(liveness check)</span></h2>
+    <p class="hint" style="margin-bottom:12px">Turn on a Person Sensor's on-board indicator LED. Lighting it is an I2C write to the sensor, so <b>a lit LED proves that sensor is powered and reachable on its bus</b> — the most direct alive/dead test for these irreplaceable sensors. Both LEDs ship disabled in firmware; toggling here is live and persisted to SD.</p>
+    <div class="field-row">
+      <label>Eyes sensor LED (Teensy 4.1)</label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="ps-led-eyes" onchange="setEyesLed(this.checked)"> light on</label>
+    </div>
+    <div class="field-row">
+      <label>Servo / base sensor LED (Teensy 4.0)</label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="ps-led-servo" onchange="setServoLed(this.checked)"> light on</label>
+    </div>
+    <p class="hint" id="ps-led-note" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">Requires the <b>S150d</b> firmware on each Teensy (REPO-ONLY until flashed). After flashing, toggle on: if the LED does not light, that sensor is not reachable on its I2C bus (power/wiring), not merely flaky.</p>
+  </div>
+
+  <!-- Person Sensor Config (T4.1 Person Sensor — live PS_CFG serial, S141) -->
+  <div class="card">
+    <h2>Person Sensor Config <span class="hint" style="font-size:11px">(Teensy firmware &mdash; live PS_CFG)</span></h2>
+    <p class="hint" style="margin-bottom:10px">Runtime tuning of the primary T4.1 Person Sensor eye-tracking gate (RD-033 resolved S140 &mdash; sensor restored). Sent live to the Teensy over serial and saved to <code style="color:var(--blue)">ps_config.json</code>, which assistant.py re-pushes on restart (a Teensy reboot reverts to firmware defaults until then). Click "Persist to SD" to survive a Pi4 reboot.</p>
+    <div id="ps-cfg-fields"></div>
+    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="savePsConfig()">Save &amp; Apply</button>
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="loadPsConfig()">Reload</button>
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="resetPsConfigDefaults()">Reset to Defaults</button>
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="persistPsConfig()">Persist to SD</button>
+    </div>
+    <div id="ps-cfg-msg" style="font-size:11px;margin-top:6px;color:var(--muted)"></div>
+  </div>
+
+  <!-- Live signal strip -->
+  <div class="card">
+    <h2>Vision Cal <span id="oglecal-sig" style="font-size:12px;color:var(--muted)">&#9679; checking</span></h2>
+    <p class="hint" style="margin-bottom:10px">Calibration companion for the OGLE face-tracking node. Node config is persisted to ESP32 NVS (no reflash). Bridge config rewrites the systemd service file and restarts ogle-bridge.</p>
+    <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
+      <span style="font-size:13px">Signal: <strong id="oglecal-present" style="color:var(--muted)">--</strong></span>
+      <span style="font-size:13px;color:var(--muted)">Conf: <span id="oglecal-conf">--</span></span>
+      <span style="font-size:13px;color:var(--muted)">Last face: <span id="oglecal-age">--</span></span>
+      <span style="font-size:13px;color:var(--muted)">FPS: <span id="oglecal-fps">--</span></span>
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="pollOgle()">Refresh</button>
+    </div>
+  </div>
+
+  <!-- Two-column: node config + bridge config -->
+  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+
+    <!-- Node-side (OGLE ESP32 /config — persists to NVS, no reflash) -->
+    <div class="card" style="flex:1;min-width:260px">
+      <h2>Node Config <span class="hint" style="font-size:11px">(ESP32 NVS)</span></h2>
+      <p class="hint" style="margin-bottom:10px">Applied live to the ESP32 and persisted to NVS. No firmware reflash needed.</p>
+      <div class="field-row">
+        <label>Confidence <span id="oc-conf-v" style="color:var(--blue)">0.50</span></label>
+        <input type="range" id="oc-conf" min="0.10" max="1.00" step="0.05" value="0.50"
+               style="flex:1;accent-color:var(--blue);height:6px;cursor:pointer"
+               oninput="document.getElementById('oc-conf-v').textContent=(+this.value).toFixed(2)">
+      </div>
+      <div class="field-row">
+        <label>Facing threshold <span id="oc-facing-v" style="color:var(--blue)">0.38</span></label>
+        <input type="range" id="oc-facing" min="0.00" max="1.00" step="0.02" value="0.38"
+               style="flex:1;accent-color:var(--blue);height:6px;cursor:pointer"
+               oninput="document.getElementById('oc-facing-v').textContent=(+this.value).toFixed(2)">
+      </div>
+      <div class="field-row">
+        <label>Detection mode</label>
+        <select id="oc-mode" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px">
+          <option value="accurate">accurate (~80ms)</option>
+          <option value="fast">fast (~50ms)</option>
+        </select>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="applyOgleNodeCfg()">Apply Node Config</button>
+        <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="rebootOgle()">Reboot Node</button>
+      </div>
+      <div id="oglecal-node-msg" style="font-size:11px;margin-top:6px;color:var(--muted)"></div>
+    </div>
+
+    <!-- Bridge-side (ogle_bridge.py env vars in ogle-bridge.service) -->
+    <div class="card" style="flex:1;min-width:260px">
+      <h2>Bridge Config <span class="hint" style="font-size:11px">(ogle_bridge.py env)</span></h2>
+      <p class="hint" style="margin-bottom:10px">Rewrites the systemd service file and restarts ogle-bridge. Use "Persist to SD" after saving to survive reboot.</p>
+      <div id="ogle-bridge-fields"></div>
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="saveOgleBridge()">Save &amp; Restart Bridge</button>
+        <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="loadOgleBridge()">Reload</button>
+        <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="resetOgleBridgeDefaults()">Reset to Defaults</button>
+      </div>
+      <div id="oglecal-bridge-msg" style="font-size:11px;margin-top:6px;color:var(--muted)"></div>
+    </div>
+  </div>
+
+  <!-- SD persistence -->
+  <div class="card">
+    <h2>SD Persistence</h2>
+    <p class="hint" style="margin-bottom:10px">Writes ogle-bridge.service to <code style="color:var(--blue)">/media/root-ro/etc/systemd/system/</code> via overlayfs dual-write. Must do this after each "Save &amp; Restart Bridge" or changes are lost on reboot.</p>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="persistOgleBridge()">Persist Bridge Config to SD</button>
+      <span id="oglecal-persist-msg" style="font-size:12px;color:var(--muted)"></span>
+    </div>
+  </div>
+
+  <!-- Calibration wizard -->
+  <div class="card">
+    <h2>Calibration Wizard</h2>
+    <p class="hint" style="margin-bottom:12px">Step-by-step checklist. Check off each item as you complete it. No state is saved — these are procedure reminders only. Work top-to-bottom.</p>
+    <div id="ogle-wizard"></div>
+  </div>
+
+</div>
+
+<div class="section" id="sec-soundboard">
+  <div class="card">
+    <h2>Soundboard — Quips &amp; Clips</h2>
+    <p class="hint" style="margin-bottom:10px">Browse, edit, assign, and enable/disable IRIS's spoken <strong>quips</strong> and pre-LLM <strong>clips</strong>. Changes save to <code style="color:var(--blue)">iris_soundboard.json</code> (RAM + SD) and apply live — clips reload instantly, edited quips re-synthesize without a restart. Clips seed disabled; enable the ones you want.</p>
+    <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-sm sb-subtab active" data-sub="clips" onclick="sbSubTab('clips')">Clips</button>
+      <button class="btn btn-sm sb-subtab" data-sub="quips" onclick="sbSubTab('quips')">Quips</button>
+      <button class="btn" id="sb-save-btn" style="margin-left:auto" onclick="saveSoundboard()">Save All Changes</button>
+      <button class="btn btn-sm" onclick="restoreSoundboard()" style="background:var(--input-bg);border:1px solid var(--border);color:var(--muted)" title="Undo the last save — restore the state from before your most recent save">Undo last save</button>
+      <button class="btn btn-sm" onclick="resetSoundboard()" style="background:var(--input-bg);border:1px solid var(--red,#e05);color:var(--red,#e05)" title="Reset all quips and clips to seed defaults">Reset Defaults</button>
+      <span id="sb-save-status" style="font-size:12px;color:var(--muted)"></span>
+    </div>
+    <div id="sb-body"><span style="color:var(--muted)">Loading...</span></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/iris_web.js"></script>
+<script src="/soundboard.js"></script>
+</body>
+</html>

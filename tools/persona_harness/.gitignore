@@ -1,0 +1,5 @@
+reports/
+*.wav
+*.mp3
+__pycache__/
+*.pyc

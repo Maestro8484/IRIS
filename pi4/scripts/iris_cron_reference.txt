@@ -1,0 +1,33 @@
+IRIS Pi4 cron reference — captured S128 (2026-06-11)
+=====================================================
+
+The scheduled sleep/wake triggers live in the `pi` USER crontab (not /etc/cron.d).
+They are persisted to SD (/media/root-ro/var/spool/cron/crontabs/pi — md5 verified
+S128) so they survive reboot. This file is the version-controlled record; it is NOT
+auto-deployed. To restore/reinstall: `crontab -e` as user `pi` and paste the entries.
+
+Current `pi` user crontab (`crontab -l`):
+-----------------------------------------
+0 21 * * * ALSA_CARD=seeed2micvoicec /usr/bin/python3 /home/pi/iris_sleep.py >> /home/pi/logs/iris_sleep.log 2>&1
+30 7 * * * ALSA_CARD=seeed2micvoicec /usr/bin/python3 /home/pi/iris_wake.py  >> /home/pi/logs/iris_wake.log  2>&1
+0 3 * * 0 sudo /bin/bash /home/pi/iris_backup.sh
+
+Behavior:
+- 21:00 daily  -> iris_sleep.py  : UDP EYES:SLEEP -> assistant _do_sleep(); writes /tmp/iris_sleep_mode.
+- 07:30 daily  -> iris_wake.py   : UDP EYES:WAKE + MOUTH:0; removes /tmp/iris_sleep_mode.
+- 03:00 Sunday -> iris_backup.sh : weekly backup.
+
+Hardening notes (S128):
+- The sleep window in code is SLEEP_WINDOW_START_HOUR=21 .. SLEEP_WINDOW_END_HOUR=8
+  (core/config.py). assistant.py now reconciles sleep state at startup from
+  in_sleep_window() OR the /tmp flag, so a restart/reboot inside the window re-asserts
+  sleep even if the cron UDP was missed (e.g. assistant down at 21:00).
+- If assistant.py is DOWN when iris_sleep.py fires, the UDP is dropped but the /tmp flag
+  is still written; the next assistant start reconciles to sleep.
+
+Persistence reminder:
+- After any crontab change, persist to SD:
+    sudo mount -o remount,rw /media/root-ro
+    sudo cp /var/spool/cron/crontabs/pi /media/root-ro/var/spool/cron/crontabs/pi
+    sudo mount -o remount,ro /media/root-ro
+  then md5-verify RAM == SD.

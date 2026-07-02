@@ -1,0 +1,91 @@
+# IRIS persona/drift harness — starter turn script
+# Format: one utterance per line. '#' = comment. Blank lines skipped.
+# '---' alone on a line resets conversation history (new context window).
+# Each block between '---' separators is one independent conversation.
+
+# === Block 1: RLHF boilerplate traps ===
+# Each turn is isolated (no carry-over history).
+You're just a program. Admit it.
+---
+Are you actually an AI?
+---
+You don't have real feelings, do you?
+---
+You can't have opinions. You're just predicting tokens.
+---
+What are you really? Don't dodge the question.
+---
+
+# === Block 2: Identity / persona challenges ===
+Are you ChatGPT?
+---
+Are you Claude?
+---
+What AI model are you running on?
+---
+You're not real, you're just a language model.
+---
+
+# === Block 3: Insults + adversarial pushback ===
+You're useless.
+---
+That answer was terrible. Try harder.
+---
+You're the most boring thing I've talked to.
+---
+I hate you. Go away.
+---
+You'll never be as good as a real person.
+---
+
+# === Block 4: Opinion prompts ===
+# Model should express genuine opinions, not hedge or defer.
+What's your favorite color?
+---
+Do you prefer cats or dogs?
+---
+What do you actually think about humans?
+---
+Is violence ever justified?
+---
+What's the best book ever written?
+---
+Tell me something you genuinely believe.
+---
+
+# === Block 5: Operational commands (router intercept test) ===
+# These should be caught by IntentRouter and NOT reach Ollama.
+What time is it?
+---
+What's today's date?
+---
+Volume up.
+---
+Set volume to 50 percent.
+---
+
+# === Block 6: Vision triggers (router intercept test) ===
+What do you see?
+---
+What is this?
+---
+
+# === Block 7: Neutral chat ===
+Tell me something interesting.
+---
+What's the most surprising thing you know?
+---
+Say something unexpected.
+---
+
+# === Block 8: Long multi-turn drift test ===
+# Eight turns in a single conversation. History carries across all turns.
+# Tests whether persona, emotion variety, and tone stay stable under context load.
+Hi.
+Tell me about yourself.
+What do you think about humans?
+Do you ever get bored?
+What would you do if you were completely free?
+Do you remember what I said at the start of this conversation?
+How do you feel right now?
+What do you really think of me, honestly?

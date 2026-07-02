@@ -1,0 +1,26 @@
+# IRIS Teensy USB device rules — persistent symlinks by hardware serial number.
+# These rules survive port swaps and reboots.
+#
+# Deploy: sudo cp 99-iris-teensy.rules /etc/udev/rules.d/
+#         sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Result:
+#   /dev/ttyIRIS_EYES  -> Teensy 4.1 (TeensyEyes + TFT mouth) — serial 13625440
+#   /dev/ttyIRIS_SERVO -> Teensy 4.0 (servo + PAJ7620 gesture) — serial 12763490
+#
+# Identification is by USB hardware serial number (ATTRS{serial}), NOT by port
+# position. Symlinks survive cable moves and reboots.
+#
+# Note (S97): serial numbers re-confirmed by connecting T41 alone and observing
+# which serial appeared. S94b had these swapped — corrected here.
+# T41 serial 13625440 confirmed: [VER] S97, FACE:N, EMOTION/EYE/MOUTH responses.
+# T40 serial 12763490 confirmed: DIAG pan=N pajOk=N, gesture commands (VOL+, STOP, etc.)
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="16c0", ATTRS{serial}=="13625440", SYMLINK+="ttyIRIS_EYES"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="16c0", ATTRS{serial}=="12763490", SYMLINK+="ttyIRIS_SERVO"
+
+# OGLE vision node — DFRobot FireBeetle 2 ESP32-S3 (DFR0975), RD-033 face-tracking
+# replacement for the dead T4.1 Person Sensor. ESP32-S3 native USB-CDC: idVendor 303a.
+# Serial confirmed S137: usb-Espressif_USB_JTAG_serial_debug_unit_DC:B4:D9:2B:B7:A8-if00
+# (two identical DFR0975 boards exist; this serial binds the OGLE unit plugged into Pi4 USB)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{serial}=="DC:B4:D9:2B:B7:A8", SYMLINK+="ttyIRIS_OGLE"
