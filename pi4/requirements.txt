@@ -13,6 +13,6 @@ numpy
 PyAudio
 requests
 pyserial
-smbus2
+smbus
 spidev
 RPi.GPIO

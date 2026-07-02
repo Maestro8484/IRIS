@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .pio/
 .vscode/
+iris_config.json
+iris_config.json.goldbak
