@@ -15,7 +15,7 @@ import re
 
 import requests
 
-from core.config import VALID_EMOTIONS, EMOTION_TAG_RE, GANDALF, OLLAMA_PORT, KOKORO_ENABLED
+from core.config import VALID_EMOTIONS, EMOTION_TAG_RE, EMOTION_TAG_ANY_RE, GANDALF, OLLAMA_PORT, KOKORO_ENABLED
 
 
 def extract_emotion_from_reply(raw: str) -> tuple:
@@ -36,8 +36,10 @@ def extract_emotion_from_reply(raw: str) -> tuple:
 def clean_llm_reply(text: str) -> str:
     """
     Strip markdown artifacts from LLM output.
-    Does NOT strip the emotion tag -- call extract_emotion_from_reply first.
+    Leading emotion tag is handled by extract_emotion_from_reply/stream_ollama;
+    this also strips any stray non-leading [EMOTION:X] tag so it's never spoken (S175).
     """
+    text = EMOTION_TAG_ANY_RE.sub('', text)
     # Strip *multi-word action phrases* and _multi-word phrases_ entirely --
     # removes stage directions while preserving single-word emphasis
     # (e.g. *very* survives to the char-strip below as just "very")

@@ -280,9 +280,22 @@ function _sbSplitList(s) {
   return (s || '').split(/[,\n]/).map(x => x.trim()).filter(Boolean);
 }
 
-async function _sbPlayClip(file) {
-  try { await fetch('/api/clips/play/' + encodeURIComponent(file), { method: 'POST' }); }
-  catch (e) { /* ignore */ }
+let _sbAudio = null;
+function _sbPlayClip(file) {
+  // Preview in the browser so you can audition clips at the desk. The old
+  // behavior (POST /api/clips/play -> aplay on the Pi4) only played out of
+  // IRIS's speaker across the room, so a browser click looked like a no-op.
+  const url = '/api/clips/file/' + encodeURIComponent(file);
+  try {
+    if (_sbAudio) { try { _sbAudio.pause(); } catch (e) {} }
+    _sbAudio = new Audio(url);
+    _sbAudio.play().catch(function () {
+      // Browser can't play it (autoplay block / codec) -> play on IRIS instead.
+      fetch('/api/clips/play/' + encodeURIComponent(file), { method: 'POST' });
+    });
+  } catch (e) {
+    fetch('/api/clips/play/' + encodeURIComponent(file), { method: 'POST' });
+  }
 }
 
 async function _sbUploadClip() {

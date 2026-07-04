@@ -194,7 +194,7 @@ class BaseMountBridge:
                     _err_logged = False
                     self._apply_stored_servo_cfg()
                 line = self._ser.readline().decode("utf-8", errors="ignore").strip()
-                if not line or line.startswith("DIAG:"):
+                if not line or line.startswith("DIAG:") or line.startswith("PSLED="):
                     continue
                 gesture_map = _load_gesture_map()
                 action = gesture_map.get(line, "SKIP")

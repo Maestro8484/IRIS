@@ -82,12 +82,12 @@ select:focus{outline:none;border-color:var(--blue)}
 .levers-row span{color:var(--text)}
 /* Log event panel */
 .log-events{background:#0a0a0c;border:1px solid var(--border);border-radius:6px;padding:8px;height:460px;overflow-y:auto}
-.log-event{display:flex;gap:8px;padding:3px 6px;border-radius:3px;margin-bottom:1px;font-family:'Courier New',monospace;font-size:11px;line-height:1.5;align-items:baseline}
+.log-event{display:flex;gap:8px;padding:3px 6px;border-radius:3px;margin-bottom:1px;font-family:'Courier New',monospace;font-size:11px;line-height:1.5;align-items:flex-start}
 .log-event:hover{background:#1a1a22}
 .log-ts{color:var(--muted);flex-shrink:0;width:66px}
 .log-cat{flex-shrink:0;width:76px;font-weight:700;font-size:10px}
-.log-msg{flex:1;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.log-detail{color:var(--muted);font-size:10px;flex-shrink:0;margin-left:6px}
+.log-msg{flex:1;color:var(--text);white-space:normal;overflow-wrap:anywhere;min-width:0}
+.log-detail{color:var(--muted);font-size:10px;flex-shrink:0;margin-left:6px;white-space:normal;overflow-wrap:anywhere;max-width:220px}
 .log-event.cat-wakeword .log-cat{color:var(--blue)}
 .log-event.cat-stt .log-cat{color:#22d3ee}
 .log-event.cat-route .log-cat{color:var(--amber)}

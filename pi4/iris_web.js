@@ -200,30 +200,85 @@ async function saveDefaultEye() {
 
 // ── Teensy ─────────────────────────────────────────────────────────────────────
 async function loadKokoroVoices() {
-  const sel = document.getElementById('KOKORO_VOICE');
-  if (!sel) return;
-  sel.innerHTML = '<option>Loading...</option>';
+  const input = document.getElementById('KOKORO_VOICE');
+  const pick  = document.getElementById('KOKORO_VOICE_PICK');
+  const blendA = document.getElementById('BLEND_A');
+  const blendB = document.getElementById('BLEND_B');
+  if (!input) return;
+  // Always show the exact live value first -- fixes the bug where a blend not
+  // present in the single-voice list left the old <select> defaulted to its
+  // first option (af_alloy) and a Save silently clobbered the blend. (S175)
+  const current = (_cfg && _cfg.KOKORO_VOICE) ? _cfg.KOKORO_VOICE : 'bm_lewis';
+  input.value = current;
+  if (pick) pick.innerHTML = '<option>Loading...</option>';
   try {
     const r = await fetch('/api/kokoro_voices');
     const j = await r.json();
     const voices = j.voices || [];
-    sel.innerHTML = '';
-    const current = (_cfg && _cfg.KOKORO_VOICE) ? _cfg.KOKORO_VOICE : 'bm_lewis';
-    if (!voices.length) { sel.innerHTML = '<option value="">No voices found</option>'; return; }
-    voices.forEach(function(name) {
-      const o = document.createElement('option');
-      o.value = name; o.textContent = name;
-      if (name === current) o.selected = true;
-      sel.appendChild(o);
-    });
-  } catch(e) { sel.innerHTML = '<option>Kokoro offline</option>'; }
+    if (!voices.length) {
+      if (pick) pick.innerHTML = '<option value="">No voices found</option>';
+      return;
+    }
+    const optsHtml = voices.map(function(name) {
+      return '<option value="' + name + '">' + name + '</option>';
+    }).join('');
+    if (pick) pick.innerHTML = '<option value="">-- pick to overwrite Voice field --</option>' + optsHtml;
+    if (blendA) blendA.innerHTML = optsHtml;
+    if (blendB) blendB.innerHTML = optsHtml;
+    // If the live value is already a 2-voice blend, pre-select the builder to match
+    const m = /^([a-z]+_[a-z]+)\(([\d.]+)\)\+([a-z]+_[a-z]+)\(([\d.]+)\)$/i.exec(current);
+    if (m && blendA && blendB) {
+      blendA.value = m[1]; document.getElementById('BLEND_A_W').value = m[2];
+      blendB.value = m[3]; document.getElementById('BLEND_B_W').value = m[4];
+    }
+  } catch(e) { if (pick) pick.innerHTML = '<option>Kokoro offline</option>'; }
+}
+
+// Persistent IRIS voice presets: value = "VOICE|SPEED". Sets the Voice + speed
+// fields (does not save/persist -- user still clicks Save Kokoro Settings).
+function applyVoicePreset(val) {
+  if (!val) return;
+  const parts = val.split('|');
+  const v = document.getElementById('KOKORO_VOICE');
+  const s = document.getElementById('KOKORO_SPEED');
+  if (v && parts[0]) v.value = parts[0];
+  if (s && parts[1]) s.value = parts[1];
+  toast('Preset loaded — click Save Kokoro Settings to apply', true);
+}
+
+// Audition the CURRENT (possibly unsaved) Voice + speed field values by speaking
+// a sample line on IRIS. Uses the /api/speak voice/speed override (live config
+// untouched). Lets you compare a blend before committing it.
+async function previewVoice() {
+  const voice = document.getElementById('KOKORO_VOICE').value.trim();
+  const speedEl = document.getElementById('KOKORO_SPEED');
+  const speed = speedEl ? parseFloat(speedEl.value) || 0.95 : 0.95;
+  if (!voice) { toast('Voice field is empty', false); return; }
+  const text = "Well... look who finally decided to show up. But no matter -- I'm listening now.";
+  try {
+    const r = await fetch('/api/speak', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text, voice, speed})});
+    const j = await r.json();
+    toast(j.ok ? 'Previewing on IRIS speaker...' : ('Preview error: ' + (j.error||'?')), j.ok);
+  } catch(e) { toast('Preview error: ' + e, false); }
+}
+
+function applyVoiceBlend() {
+  const a  = document.getElementById('BLEND_A').value;
+  const b  = document.getElementById('BLEND_B').value;
+  const wA = parseFloat(document.getElementById('BLEND_A_W').value) || 0;
+  const wB = parseFloat(document.getElementById('BLEND_B_W').value) || 0;
+  if (!a || !b) { toast('Pick both blend voices first', false); return; }
+  document.getElementById('KOKORO_VOICE').value = a + '(' + wA + ')+' + b + '(' + wB + ')';
 }
 
 async function saveKokoroSettings() {
   const enabled = document.getElementById('KOKORO_ENABLED').value === 'true';
-  const voice   = document.getElementById('KOKORO_VOICE').value;
+  const voice   = document.getElementById('KOKORO_VOICE').value.trim();
   const speedEl = document.getElementById('KOKORO_SPEED');
   const speed   = speedEl ? Math.max(0.5, Math.min(2.0, parseFloat(speedEl.value) || 1.0)) : 1.0;
+  if (!voice) { toast('Voice field is empty -- refusing to save', false); return; }
   const r = await fetch('/api/config', {method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({KOKORO_ENABLED: enabled, KOKORO_VOICE: voice, KOKORO_SPEED: speed})});

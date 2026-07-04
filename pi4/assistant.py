@@ -1189,7 +1189,7 @@ def main():
             ["/home/pi/wyoming-openwakeword/.venv/bin/python3", "-m", "wyoming_openwakeword",
              "--uri", f"tcp://127.0.0.1:{OWW_PORT}",
              "--custom-model-dir", "/home/pi/wyoming-openwakeword/custom", "--preload-model", WAKE_WORD,
-             "--threshold", str(OWW_THRESHOLD)],
+             "--threshold", str(OWW_THRESHOLD), "--trigger-level", str(OWW_TRIGGER_LEVEL)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(30):
             try:

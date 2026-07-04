@@ -9,7 +9,9 @@
 #
 # APPEND mode with timestamp tracking: captures only events since last run,
 # so journald rotation cannot destroy already-captured history.
-# Retention: size-based, removes oldest daily files when total exceeds 100MB.
+# Retention: size-based, removes oldest daily files when total exceeds 500MB.
+# (S175: raised from 100MB -- SD has 23G+ free, 100MB was evicting forensic
+# history sooner than necessary for no disk-pressure reason.)
 
 STAMP="/run/iris_log_last_ts"
 LOGDIR="/media/root-ro/home/pi/logs"
@@ -30,10 +32,10 @@ journalctl -u assistant.service -u iris-web.service -u ogle-bridge.service \
   --since="$SINCE" --output=short \
   >> "$LOGDIR/iris-${TODAY}.log" 2>/dev/null
 
-# Size cap: remove oldest daily files if logs total exceeds 100MB
+# Size cap: remove oldest daily files if logs total exceeds 500MB
 while true; do
     TOTAL_MB=$(du -sm "$LOGDIR"/iris-*.log 2>/dev/null | awk '{s+=$1} END{printf "%d", s+0}')
-    [ "${TOTAL_MB:-0}" -le 100 ] && break
+    [ "${TOTAL_MB:-0}" -le 500 ] && break
     OLDEST=$(ls -tr "$LOGDIR"/iris-*.log 2>/dev/null | head -1)
     [ -z "$OLDEST" ] && break
     rm -f "$OLDEST"

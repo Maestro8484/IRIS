@@ -30,10 +30,10 @@ CHATTERBOX_ENABLED      = True
 
 # ── Kokoro TTS ────────────────────────────────────────────────────────────────
 KOKORO_BASE_URL  = "http://192.168.1.3:8004"
-KOKORO_VOICE     = "bf_lily(0.8)+bm_george(0.2)"  # "M" blend v2 (S167); was bf_lily(0.6)+bf_emma(0.4)
+KOKORO_VOICE     = "bf_lily(0.8)+bf_emma(0.2)"  # "M" blend v3 all-female (S178); was bf_lily(0.8)+bm_george(0.2) (S167 male-tinged, unintended)
 KOKORO_ENABLED   = True
-KOKORO_SPEED       = 0.9  # measured/dignified M pace (S167); was 1.0
-KOKORO_SPEED_QUIPS = 1.15  # slightly faster for wakeword quip cache
+KOKORO_SPEED       = 0.95  # measured/dignified M pace (S178, ear-picked); was 0.9
+KOKORO_SPEED_QUIPS = 1.1  # slightly faster for wakeword quip cache (S178, was 1.15)
 
 # ── F5-TTS (voice-clone voice DNA on GandalfAI 8005) ──────────────────────────────
 # Persistent F5-TTS HTTP server on GandalfAI port 8005 (C:\IRIS\f5tts_server.py,
@@ -242,6 +242,7 @@ WOL_POLL_INTERVAL = 5
 
 # ── Wake word ─────────────────────────────────────────────────────────────────
 OWW_THRESHOLD          = 0.65
+OWW_TRIGGER_LEVEL      = 2      # consecutive activations over threshold required to fire (S176: FP mitigation, no retrain)
 OWW_DRAIN_SECS         = 0.15   # audio drained after wakeword before recording starts
 OWW_POST_PLAY_DRAIN_SECS = 0.5  # mic audio discarded after TTS playback to clear speaker echo
 
@@ -272,12 +273,16 @@ EMOTION_EYE_MAP = {e: -1 for e in VALID_EMOTIONS}
 
 EMOTION_TAG_RE = re.compile(r'^\[EMOTION:([A-Z]+)\]\s*', re.IGNORECASE)
 
+# Un-anchored variant: catches stray [EMOTION:X] tags the model emits mid-reply
+# (EMOTION_TAG_RE only extracts the leading one) so they never reach TTS. (S175)
+EMOTION_TAG_ANY_RE = re.compile(r'\[EMOTION:[A-Z]+\]\s*', re.IGNORECASE)
+
 # ── iris_config.json loader (web UI overrides) ────────────────────────────────
 _OVERRIDABLE = {
     "RECORD_SECONDS", "SILENCE_SECS", "SILENCE_RMS",
     "KIDS_RECORD_SECONDS", "KIDS_SILENCE_SECS", "KIDS_SILENCE_RMS",
     "KIDS_GAP_FILLERS", "KIDS_THINK_FILLER_MS", "GESTURE_AUDIO_CUE", "GESTURE_MOUTH_CUE",
-    "OWW_THRESHOLD", "OWW_POST_PLAY_DRAIN_SECS", "FOLLOWUP_TIMEOUT", "KIDS_FOLLOWUP_TIMEOUT", "KIDS_MODE_INACTIVITY_TIMEOUT",
+    "OWW_THRESHOLD", "OWW_TRIGGER_LEVEL", "OWW_POST_PLAY_DRAIN_SECS", "FOLLOWUP_TIMEOUT", "KIDS_FOLLOWUP_TIMEOUT", "KIDS_MODE_INACTIVITY_TIMEOUT",
     "FOLLOWUP_MAX_TURNS", "GAME_FOLLOWUP_TURNS", "GAME_REENTRY_GRACE_S", "CONTEXT_TIMEOUT_SECS", "NUM_PREDICT", "NUM_PREDICT_SHORT", "NUM_PREDICT_MEDIUM", "NUM_PREDICT_LONG", "NUM_PREDICT_MAX", "TTS_MAX_CHARS",
     "LOUD_STOP_THRESHOLD", "DEFAULT_EYE_IDX",
     "CHATTERBOX_VOICE", "CHATTERBOX_EXAGGERATION", "CHATTERBOX_ENABLED",
@@ -318,6 +323,7 @@ _TYPE_COERCE = {
     "GESTURE_AUDIO_CUE":       (bool,  None),
     "GESTURE_MOUTH_CUE":       (bool,  None),
     "OWW_THRESHOLD":           (float, (0.1, 1.0)),
+    "OWW_TRIGGER_LEVEL":       (int,   (1, 5)),
     "FOLLOWUP_TIMEOUT":        (int,   (1, 60)),
     "KIDS_FOLLOWUP_TIMEOUT":          (int,   (1, 120)),
     "KIDS_MODE_INACTIVITY_TIMEOUT":   (int,   (60, 7200)),

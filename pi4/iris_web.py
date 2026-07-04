@@ -2,7 +2,7 @@
 """IRIS Web Config Panel — Flask server (Pi4)."""
 import json, os, re, subprocess, time, wave, tempfile, threading
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import sys; sys.path.insert(0, "/home/pi")
 from core.config import CMD_PORT
@@ -32,6 +32,14 @@ JS_FILE      = os.path.join(_WEB_DIR, "iris_web.js")
 HELP_FILE    = os.path.join(_WEB_DIR, "iris_help.html")
 SLEEP_FLAG   = "/tmp/iris_sleep_mode"
 _cfg_lock    = threading.Lock()  # RD-034: serialise all config read-modify-write + persist
+# S175: serialises the root-ro mount cycles inside api_persist_config (config cp,
+# then ALSA cp) -- a single click already fires two back-to-back remount,rw/ro
+# round trips; overlapping requests (double-click) raced a third on top and left
+# the mount stuck rw ("mount point is busy", observed 2026-07-02). Separate from
+# _cfg_lock so quick config reads/writes are never blocked behind a slow mount.
+# Does NOT alter the mount -o remount command sequence itself (see feedback
+# memory: never modify that sequence -- S152 regression).
+_persist_mount_lock = threading.Lock()
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 def read_cfg():
@@ -529,21 +537,30 @@ def api_ps_status():
 _KOKORO_FALLBACK_VOICES = [
     "af_alloy", "af_bella", "af_heart", "af_jessica", "af_nicole", "af_nova",
     "af_sarah", "af_sky", "am_adam", "am_echo", "am_eric", "am_liam",
-    "am_michael", "am_onyx", "bf_alice", "bf_emma", "bf_isabella",
+    "am_michael", "am_onyx", "bf_alice", "bf_emma", "bf_lily", "bf_isabella",
     "bm_daniel", "bm_fable", "bm_george", "bm_lewis", "bm_myles",
 ]
 
 @app.route("/api/kokoro_voices")
 def api_kokoro_voices():
     try:
-        r = requests.get(f"{KOKORO_URL}/v1/voices", timeout=5)
+        # Kokoro-FastAPI real endpoint is /v1/audio/voices (NOT /v1/voices, which
+        # 404s and silently dropped us to the stale fallback list that omitted
+        # bf_lily). Response is {"voices":[{"id","name"},...]} -- flatten to names.
+        r = requests.get(f"{KOKORO_URL}/v1/audio/voices", timeout=5)
         r.raise_for_status()
         data = r.json()
-        if isinstance(data, list):
-            voices = data
-        elif isinstance(data, dict):
-            voices = data.get("voices", data.get("data", _KOKORO_FALLBACK_VOICES))
-        else:
+        if isinstance(data, dict):
+            data = data.get("voices", data.get("data", []))
+        voices = []
+        for v in (data or []):
+            if isinstance(v, dict):
+                name = v.get("id") or v.get("name")
+                if name:
+                    voices.append(name)
+            elif isinstance(v, str):
+                voices.append(v)
+        if not voices:
             voices = _KOKORO_FALLBACK_VOICES
         return jsonify(voices=voices)
     except Exception as e:
@@ -596,6 +613,17 @@ def api_speak():
     if not text:
         return jsonify(error="empty"), 400
     cfg = read_cfg()
+    # Optional per-call voice/speed override so the WebUI Voice tab can preview an
+    # unsaved blend without persisting it (leaves live config untouched).
+    ov_voice = data.get("voice")
+    if ov_voice:
+        cfg = dict(cfg); cfg["KOKORO_VOICE"] = str(ov_voice)
+    ov_speed = data.get("speed")
+    if ov_speed is not None:
+        try:
+            cfg = dict(cfg); cfg["KOKORO_SPEED"] = max(0.5, min(2.0, float(ov_speed)))
+        except (TypeError, ValueError):
+            pass
     speak_async(text, cfg)
     return jsonify(ok=True, spoken=text)
 
@@ -603,6 +631,20 @@ def api_speak():
 def api_sd_status():
     """Check if iris_config.json in RAM matches the SD card copy."""
     return jsonify(synced=_sd_synced())
+
+def _run_mount_cycle(cmd_str, timeout=20):
+    """
+    Run a root-ro remount+cp+remount bash sequence, serialized against other
+    persist calls and retried once if the kernel reports the mount busy (S175).
+    The command string itself (mount -o remount,rw/ro ...) is passed through
+    unmodified -- only the calling/retry orchestration is new.
+    """
+    with _persist_mount_lock:
+        result = subprocess.run(["sudo", "bash", "-c", cmd_str], capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0 and "busy" in result.stderr.lower():
+            time.sleep(1.5)
+            result = subprocess.run(["sudo", "bash", "-c", cmd_str], capture_output=True, text=True, timeout=timeout)
+        return result
 
 @app.route("/api/persist_config", methods=["POST"])
 def api_persist_config():
@@ -625,29 +667,25 @@ def api_persist_config():
         except Exception as e:
             return jsonify(ok=False, error=f"persist snapshot failed: {e}"), 500
     try:
-        result = subprocess.run(
-            ["sudo", "bash", "-c",
+        result = _run_mount_cycle(
              f"mount -o remount,rw /media/root-ro && "
              f"[ -s {SD_CONFIG} ] && cp -f {SD_CONFIG} {SD_CONFIG}.goldbak; "
              f"cp {_persist_src} {SD_CONFIG} && "
              f"chown pi:pi {SD_CONFIG} && "
              f"chmod 644 {SD_CONFIG} && "
              f"sync && "
-             f"mount -o remount,ro /media/root-ro"],
-            capture_output=True, text=True, timeout=20)
+             f"mount -o remount,ro /media/root-ro")
         if result.returncode != 0:
             return jsonify(ok=False, error=result.stderr.strip() or "mount/cp failed"), 500
         verified = _sd_synced()
         # Copy ALSA state to SD layer
         alsa_src = "/var/lib/alsa/asound.state"
         alsa_dst = "/media/root-ro/var/lib/alsa/asound.state"
-        alsa_result = subprocess.run(
-            ["sudo", "bash", "-c",
+        alsa_result = _run_mount_cycle(
              f"mount -o remount,rw /media/root-ro && "
              f"cp {alsa_src} {alsa_dst} && "
              f"sync && "
-             f"mount -o remount,ro /media/root-ro"],
-            capture_output=True, text=True, timeout=20)
+             f"mount -o remount,ro /media/root-ro")
         alsa_ok = alsa_result.returncode == 0
         return jsonify(ok=verified, verified=verified, alsa_persisted=alsa_ok)
     except Exception as e:
@@ -1375,9 +1413,21 @@ def api_clips():
         return jsonify(ok=False, error=str(e)), 500
 
 
+@app.route("/api/clips/file/<filename>")
+def api_clips_file(filename):
+    """Serve a clip WAV to the browser for in-page preview (audition at the desk,
+    not out of IRIS's speaker across the room)."""
+    if "/" in filename or "\\" in filename or not filename.lower().endswith(".wav"):
+        return jsonify(ok=False, error="invalid filename"), 400
+    path = os.path.join(CLIPS_DIR, filename)
+    if not os.path.isfile(path):
+        return jsonify(ok=False, error="not found"), 404
+    return send_file(path, mimetype="audio/wav")
+
 @app.route("/api/clips/play/<filename>", methods=["POST"])
 def api_clips_play(filename):
-    """Non-blocking aplay of a named clip from the clips directory."""
+    """Non-blocking aplay of a named clip from the clips directory (plays on the
+    Pi4 speaker -- used as the fallback when browser audio can't play the WAV)."""
     if "/" in filename or "\\" in filename or not filename.lower().endswith(".wav"):
         return jsonify(ok=False, error="invalid filename"), 400
     path = os.path.join(CLIPS_DIR, filename)
