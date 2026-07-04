@@ -21,7 +21,7 @@
   <button onclick="tab('wakeword',this)">Wake Word</button>
   <button onclick="tab('voice',this)">Voice</button>
   <button onclick="tab('conversation',this)">Conversation</button>
-  <button onclick="tab('eyes',this)">Eyes</button>
+  <button onclick="tab('eyes',this)">Face</button>
   <button onclick="tab('sleep',this);_saTabHook()">Sleep</button>
   <button onclick="tab('lights',this)">Lights</button>
   <button onclick="tab('gandalf',this)">Gandalf AI</button>
@@ -56,6 +56,26 @@
     <div class="field-row"><label>Silence timeout (s)</label><input type="number" id="KIDS_SILENCE_SECS" step="0.1"></div>
     <div class="field-row"><label>Silence RMS gate</label><input type="number" id="KIDS_SILENCE_RMS" step="10"></div>
     <button class="btn btn-primary" onclick="saveFields(['KIDS_RECORD_SECONDS','KIDS_SILENCE_SECS','KIDS_SILENCE_RMS'])">Save Kids Audio</button>
+  </div>
+  <div class="card">
+    <h2>Speaker Volume</h2>
+    <p class="hint">wm8960 Class D direct output. Range 0–127. Takes effect immediately.</p>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px">
+      <input type="range" id="vol-slider" min="0" max="127" value="110"
+             style="flex:1;accent-color:var(--blue);height:6px;cursor:pointer"
+             oninput="document.getElementById('vol-display').textContent=this.value+' ('+Math.round(this.value/127*100)+'%)'">
+      <span id="vol-display" style="width:64px;text-align:right;color:var(--text);font-size:13px;flex-shrink:0">110 (87%)</span>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn btn-primary" onclick="setVolume()">Set Volume</button>
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="refreshVolume()">Refresh</button>
+    </div>
+    <div class="field-row" style="margin-top:4px">
+      <label>Volume ceiling (VOL_MAX)</label>
+      <input type="number" id="VOL_MAX" step="1" min="60" max="127" style="width:80px">
+    </div>
+    <p class="hint" style="margin-bottom:8px">Hard ceiling used by voice volume commands. 127 = no ceiling.</p>
+    <button class="btn btn-primary" onclick="saveFields(['VOL_MAX'])">Save Ceiling</button>
   </div>
 </div>
 
@@ -509,26 +529,6 @@
       <button class="btn btn-primary" onclick="persistToSD()">Persist Config to SD</button>
       <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="checkSDStatus()">Check SD Status</button>
     </div>
-  </div>
-  <div class="card">
-    <h2>Speaker Volume</h2>
-    <p class="hint">wm8960 Class D direct output. Range 0–127. Takes effect immediately.</p>
-    <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px">
-      <input type="range" id="vol-slider" min="0" max="127" value="110"
-             style="flex:1;accent-color:var(--blue);height:6px;cursor:pointer"
-             oninput="document.getElementById('vol-display').textContent=this.value+' ('+Math.round(this.value/127*100)+'%)'">
-      <span id="vol-display" style="width:64px;text-align:right;color:var(--text);font-size:13px;flex-shrink:0">110 (87%)</span>
-    </div>
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <button class="btn btn-primary" onclick="setVolume()">Set Volume</button>
-      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="refreshVolume()">Refresh</button>
-    </div>
-    <div class="field-row" style="margin-top:4px">
-      <label>Volume ceiling (VOL_MAX)</label>
-      <input type="number" id="VOL_MAX" step="1" min="60" max="127" style="width:80px">
-    </div>
-    <p class="hint" style="margin-bottom:8px">Hard ceiling used by voice volume commands. 127 = no ceiling.</p>
-    <button class="btn btn-primary" onclick="saveFields(['VOL_MAX'])">Save Ceiling</button>
   </div>
 </div>
 

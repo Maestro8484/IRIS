@@ -76,7 +76,8 @@ function tab(name, btn) {
   document.getElementById('sec-' + name).classList.add('active');
   btn.classList.add('active');
   if (name === 'logs') fetchLogs();
-  if (name === 'system') { pollStatus(); checkSDStatus(); refreshVolume(); pollOgle(); }
+  if (name === 'audio') refreshVolume();
+  if (name === 'system') { pollStatus(); checkSDStatus(); pollOgle(); }
   if (name === 'soundboard') fetchSoundboard();
   if (name === 'voice') { loadKokoroVoices(); }
   if (name === 'gandalf') loadVram();

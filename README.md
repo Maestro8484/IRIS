@@ -5,6 +5,10 @@
 ![Servo/Gestures: Teensy 4.0](https://img.shields.io/badge/servo%2Fgestures-Teensy%204.0-orange)
 ![Orchestrator: Raspberry Pi 4](https://img.shields.io/badge/orchestrator-Raspberry%20Pi%204-c51a4a)
 
+**Most home assistants are a microphone with a personality bolted on. IRIS is the other way around.** It's a physical robot face — gaze-tracking eyes that follow you across the room, a mouth and LEDs that shift with its mood, a voice that trades quips with adults and plays "guess my face" with kids — and it runs **100% on hardware you own, with zero cloud AI, zero speech APIs, and zero telemetry.**
+
+![Architecture: Pi 4 orchestrator, GandalfAI inference, twin Teensy display + base controllers](docs/media/architecture.png)
+
 IRIS is a personality-first AI robot. The core design goal is genuine character, emotional congruence, and a face that means what it says — voice, eyes, mouth, and LED lighting all changing simultaneously, in real time, based on conversational content. All technical architecture serves this goal.
 
 IRIS borrows from interpersonal neurobiology — the science of how people attune to each other through affective attunement, paraverbal signal, timing, and congruent affect — and treats it as an engineering spec rather than a metaphor. The aim is the uncanny-in-a-good-way feeling of being talked *to*, not at: a robot with enough character to trade quips with an adult and play I Spy or "guess my face" with a kid. The personality is defined by what IRIS *is*, not by what it must avoid — which keeps the model's anthropomorphic expression wide open.
@@ -14,7 +18,7 @@ After 168 documented build sessions, everything runs locally on owned hardware: 
 ### Signature integrations
 
 - **Lifelike gaze-tracking eyes** — the namesake feature: a high-detail TeensyEyes render (Adafruit Uncanny Eyes lineage) on twin 240×240 round displays, with a Useful Sensors Person Sensor literally driving the gaze so IRIS's eyes follow you around the room. Pupils dilate and the eye style shifts with emotion. A second Person Sensor pans the whole head to track you — deliberately, glacially slow.
-- **Pi-camera kids games** — reciprocal I Spy / Show Me / Make a Face: IRIS sees, reacts in character, and keeps the back-and-forth going for several turns without re-waking.
+- **Camera vision & recognition** — a Raspberry Pi Camera Module v2 feeds a vision-capable LLM (Mistral Small with Pixtral vision baked in). IRIS plays reciprocal I Spy / Show Me / Make a Face — seeing, reacting in character, and keeping the back-and-forth going for several turns without re-waking — and recognizes specific people, and the family dog, by name from descriptions written into its persona modelfile.
 - **RPQR instant-quip wake** — a pre-synthesized quip fires the moment you say the wake word, before the inference server has even received the request, so there is zero perceived wake lag.
 - **Streaming-first speech** — IRIS starts talking on the first sentence while the rest still generates: ~1.5 s to first audio instead of waiting ~23 s for a full reply.
 - **Tripartite affect loop** — every reply carries an `[EMOTION:x]` tag that drives eyes, mouth, and LEDs in one simultaneous signal.
@@ -25,8 +29,8 @@ Four nodes, one pipeline:
 
 | Node | Role |
 |---|---|
-| **Raspberry Pi 4** (overlayfs, read-only SD) | Orchestrator: wakeword, mic/speaker audio, intent routing, streaming dispatch, LEDs, Pi camera, Teensy serial bridge, WebUI (port 8080), cron sleep/wake |
-| **GandalfAI** (Windows workstation, RTX 3090) | All heavy inference: Ollama LLM (Mistral Small 24B behind custom `iris` / `iris-kids` persona modelfiles), faster-whisper STT, Kokoro TTS (primary) + Piper TTS (fallback) |
+| **Raspberry Pi 4** (overlayfs, read-only SD) | Orchestrator: wakeword, ReSpeaker 2-Mic HAT audio (GPIO ribbon), intent routing, streaming dispatch, LEDs, Raspberry Pi Camera Module v2, Teensy serial bridge, WebUI (port 5000), cron sleep/wake |
+| **GandalfAI** (Windows workstation, RTX 3090) | All heavy inference: Ollama LLM (Mistral Small 24B, Pixtral vision baked in, behind custom `iris` / `iris-kids` persona modelfiles), faster-whisper STT, Kokoro TTS (primary) + Piper TTS (fallback) |
 | **Teensy 4.1** (USB serial) | Display controller: two GC9A01A round-TFT eyes + ILI9341 TFT mouth (10 expression frames), Person Sensor on I2C for gaze tracking, sleep starfield renderer |
 | **Teensy 4.0** (USB serial) | Base controller: pan servo (ServoEasing) + PAJ7620U2 gesture sensor, second Person Sensor for head tracking |
 
