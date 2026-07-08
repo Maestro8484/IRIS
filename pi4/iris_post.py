@@ -8,13 +8,14 @@ LEDs: layer-colored progress (cyan/purple/amber/orange/red), green flash on PASS
       red 3× flash + freeze on FAIL.
 """
 
-import datetime, json, os, socket, subprocess, sys, time, threading
+import datetime, json, os, re, socket, subprocess, sys, time, threading
 sys.path.insert(0, "/home/pi")
 
 PASS, WARN, FAIL, SKIP = "PASS", "WARN", "FAIL", "SKIP"
 LOG_PATH    = "/home/pi/logs/iris_post.log"
 CONFIG_PATH = "/home/pi/iris_config.json"
 INTENT_LOG  = "/home/pi/logs/iris_intent.log"
+PS_CONFIG_PATH = "/home/pi/ps_config.json"
 
 # APA102 layer colors (R, G, B)
 _LED_LAYERS = [
@@ -45,6 +46,10 @@ OLLAMA_MODEL_KIDS   = "iris-kids"
 NUM_LEDS            = 3
 DEFAULT_EYE_IDX     = 0
 MOUTH_INTENSITY_IDLE = 8   # post-boot resting brightness; matches core.config (was 3 ≈2.7% near-black, S130)
+KOKORO_VOICE        = "bf_lily(0.8)+bf_emma(0.2)"
+KOKORO_SPEED        = 0.95
+OWW_THRESHOLD       = 0.65
+OWW_TRIGGER_LEVEL   = 2
 
 try:
     from core.config import (
@@ -53,6 +58,7 @@ try:
         WOL_BOOT_TIMEOUT, WOL_POLL_INTERVAL, GANDALF_MAC,
         OLLAMA_MODEL_ADULT, OLLAMA_MODEL_KIDS, NUM_LEDS,
         DEFAULT_EYE_IDX, MOUTH_INTENSITY_IDLE,
+        KOKORO_VOICE, KOKORO_SPEED, OWW_THRESHOLD, OWW_TRIGGER_LEVEL,
     )
     try:
         from core.config import KOKORO_BASE_URL
@@ -317,9 +323,12 @@ class _POST:
             self.record("L2", "MOUTH_INTENSITY ramp", FAIL, str(e)[:60])
 
         # Restore display to defaults after exercise — without this the Teensy
-        # would be left on EYE:6 (bigBlue) and MOUTH_INTENSITY:15 after every boot.
+        # would be left on EYE:6 (bigBlue) and MOUTH_INTENSITY:15 after every boot,
+        # and the mouth blank (the EYES:SLEEP step above clears the mouth panel and
+        # EYES:WAKE does not redraw one), which reads as a "sleep" mouth on restart.
         self.send_display(f"EYE:{DEFAULT_EYE_IDX}", 0.1)
         self.send_display(f"MOUTH_INTENSITY:{MOUTH_INTENSITY_IDLE}", 0.1)
+        self.send_display("MOUTH:2", 0.1)   # S187c: default resting mouth = CURIOUS (was left blank)
 
     def l2_firmware_version(self):
         """Read firmware version from the most recent [VER] line in the assistant journal."""
@@ -442,6 +451,117 @@ class _POST:
         except Exception as e:
             return self.record("L4", "config owner pi:pi", FAIL, str(e)[:60])
 
+    # ── L4b — Config-sanity: live effective vs saved operator intent (AUD-6) ───
+    # WARN-only, never blocking. Catches silent resets like the S162e/S167c/S175/
+    # S178 KOKORO_VOICE af_alloy saga and the RD-040b LED-default drift: something
+    # snapped back to a compiled-in/firmware default without the operator's saved
+    # setting following it. Report only -- never auto-corrects.
+
+    _PS_CFG_ACK_RE = re.compile(r'\[DBG\] PS_CFG (\w+)=(\S+)')
+
+    def _read_ps_cfg_ack(self):
+        """Grep the Teensy's own '[DBG] PS_CFG KEY=value' ack lines from the
+        assistant journal -- same pattern iris_web.py's /api/ps/config GET uses.
+        Proves a value was actually received by the Teensy, vs. the sidecar file
+        which only records what was last asked for. Returns {} if no ack seen yet
+        (e.g. fresh boot -- POST runs before _push_ps_config in assistant.py's
+        startup order, so an empty ack here is expected, not itself a drift)."""
+        try:
+            raw = subprocess.run(
+                ["bash", "-c",
+                 "journalctl -u assistant -n 500 --no-pager --output=short-iso "
+                 "| grep -F '[DBG] PS_CFG ' | tail -20"],
+                capture_output=True, text=True, timeout=5).stdout.splitlines()
+        except Exception:
+            raw = []
+        ack = {}
+        for line in raw:
+            m = self._PS_CFG_ACK_RE.search(line)
+            if m:
+                ack[m.group(1)] = m.group(2)
+        return ack
+
+    @staticmethod
+    def _oww_proc_args():
+        """Ground-truth --threshold/--trigger-level the live wakeword process was
+        actually launched with (vs. the config value assistant.py intended to pass)."""
+        try:
+            out = subprocess.run(["bash", "-c", "ps -eo args | grep wyoming_openwakeword | grep -v grep"],
+                                  capture_output=True, text=True, timeout=5).stdout
+            thr_m = re.search(r'--threshold\s+(\S+)', out)
+            trg_m = re.search(r'--trigger-level\s+(\S+)', out)
+            return (thr_m.group(1) if thr_m else None,
+                    trg_m.group(1) if trg_m else None)
+        except Exception:
+            return (None, None)
+
+    def l4_config_sanity(self):
+        drift = []   # list of (label, saved, live) tuples
+
+        # (1) KOKORO_VOICE / KOKORO_SPEED: saved iris_config.json vs live-loaded core.config
+        try:
+            with open(CONFIG_PATH) as f:
+                saved_cfg = json.load(f)
+        except Exception:
+            saved_cfg = None
+        if saved_cfg is not None:
+            for key, live_val in (("KOKORO_VOICE", KOKORO_VOICE), ("KOKORO_SPEED", KOKORO_SPEED)):
+                if key in saved_cfg and str(saved_cfg[key]) != str(live_val):
+                    drift.append((key, saved_cfg[key], live_val))
+
+        # (2) PS config: saved ps_config.json vs Teensy's last [DBG] PS_CFG ack
+        try:
+            with open(PS_CONFIG_PATH) as f:
+                saved_ps = json.load(f)
+        except Exception:
+            saved_ps = None
+        ack = self._read_ps_cfg_ack()
+        if saved_ps is not None:
+            if not ack:
+                self.log("[POST] CFG-DRIFT PS_CFG: no Teensy ack in journal yet "
+                          "(expected on a fresh boot -- _push_ps_config runs after POST)")
+            else:
+                for key in ("CONF", "FACING", "LED"):
+                    if key in saved_ps and key in ack:
+                        saved_v = saved_ps[key]
+                        ack_v   = ack[key]
+                        try:
+                            match = float(saved_v) == float(ack_v)
+                        except (TypeError, ValueError):
+                            match = str(saved_v) == str(ack_v)
+                        if not match:
+                            drift.append((f"PS_CFG.{key}", saved_v, ack_v))
+
+        # (3) OWW_THRESHOLD + trigger-level: saved iris_config.json / core.config vs
+        # the actual running wyoming_openwakeword process args (ground truth).
+        if saved_cfg is not None and "OWW_THRESHOLD" in saved_cfg:
+            try:
+                if float(saved_cfg["OWW_THRESHOLD"]) != float(OWW_THRESHOLD):
+                    drift.append(("OWW_THRESHOLD (config)", saved_cfg["OWW_THRESHOLD"], OWW_THRESHOLD))
+            except (TypeError, ValueError):
+                pass
+        proc_thr, proc_trg = self._oww_proc_args()
+        if proc_thr is not None:
+            try:
+                if float(proc_thr) != float(OWW_THRESHOLD):
+                    drift.append(("OWW_THRESHOLD (live process)", OWW_THRESHOLD, proc_thr))
+            except ValueError:
+                pass
+        if proc_trg is not None:
+            try:
+                if int(float(proc_trg)) != int(OWW_TRIGGER_LEVEL):
+                    drift.append(("OWW_TRIGGER_LEVEL (live process)", OWW_TRIGGER_LEVEL, proc_trg))
+            except ValueError:
+                pass
+
+        # (4) Report
+        if drift:
+            for label, saved_v, live_v in drift:
+                self.log(f"[POST] CFG-DRIFT {label}: saved={saved_v!r} live={live_v!r}")
+            return self.record("L4", "config sanity (saved vs live)", WARN,
+                               f"{len(drift)} mismatch(es) -- see CFG-DRIFT lines")
+        return self.record("L4", "config sanity (saved vs live)", PASS)
+
     # ── Main sequence ─────────────────────────────────────────────────────────
 
     def run(self):
@@ -472,6 +592,7 @@ class _POST:
         self.l4_config()
         self.l4_md5()
         self.l4_ownership()
+        self.l4_config_sanity()
 
         # ── L5: Verdict ───────────────────────────────────────────────────────
         # Only serial (eyes/mouth) and mic failures block startup.

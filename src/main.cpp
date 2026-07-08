@@ -144,7 +144,7 @@ static bool     eyesSpeaking = false;
 // (mirrors the SLEEP_CFG startup push) so tuning survives a power cycle.
 static uint8_t  psConfGate       = 45;                    // PS_CFG:CONF=n   box_confidence gate. S153c: default 60→45 (S150c known-good).
 static bool     psFacingRequired = false;                 // PS_CFG:FACING=0/1  require face.is_facing. S153c: default true→FALSE — the is_facing bit flickers with normal head movement, disqualifying the face → eyes drop the lock → autoMove (random gaze) resumes. S150c proved FACING=0 is the durable fix; baking it as the firmware default makes tracking correct AUTONOMOUSLY on power-up instead of depending on the Pi4 pushing ps_config.json after boot.
-static bool     psLedEnabled     = true;                  // PS_CFG:LED=0/1  on-sensor LED indicator (liveness). S153: default TRUE so the Teensy-only init lights the LED autonomously at boot — a true alive/reachable signal independent of the Pi4 PS_CFG push (decoupled from the S150d Pi4 dependency).
+static bool     psLedEnabled     = false;                 // PS_CFG:LED=0/1  on-sensor LED indicator. S185: default FALSE, matching the operator's actual saved preference (ps_config.json LED:0) — same "bake the known-good value as the autonomous default" pattern as CONF/FACING above. S153's TRUE default fought that preference on every Teensy reset (power cycle, brownout, or a soft reset that doesn't trigger a USB reconnect the Pi4 can detect and correct), which is why the LED kept relighting "no matter the WebUI setting" (RD-040 follow-up). enableLED() is still called live on every PS_CFG:LED command and at (re)detection, so turning it ON when wanted still works exactly as before.
 static uint32_t psLostMs         = FACE_LOST_TIMEOUT_MS;  // PS_CFG:LOST_MS=n  autoMove resume delay
 static float    psYBias          = 0.0f;                  // PS_CFG:Y_BIAS=f  additive Y target offset
 
@@ -162,7 +162,7 @@ static constexpr uint32_t IDLE_AUTO_MS = 120000UL; // 2 min inactivity
 static uint8_t  pendingMouthIdx    = 0;
 static bool     mouthUpdatePending = false;
 static uint32_t lastMouthRenderMs  = 0;
-static constexpr uint32_t MOUTH_RENDER_MIN_MS = 75;
+static constexpr uint32_t MOUTH_RENDER_MIN_MS = 55;  // S186: dirty-rect redraws are cheaper, so bursts can render a touch more often without stalling the eye loop
 
 // MOUTHGEST (S144): non-blocking gesture acknowledgment. Shows the SILLY face
 // (idx 9) for MOUTH_GESTURE_MS, then auto-restores to NEUTRAL. 0 = inactive.
@@ -513,7 +513,7 @@ void setup() {
   mouthTFTInit();
   initEyes(!hasJoystick(), !hasBlinkButton(), !hasLightSensor());
   applyEmotion(NEUTRAL);
-  mouthTFTShow(0); // NEUTRAL on boot
+  mouthTFTShow(2); // CURIOUS on boot (S187c: default resting mouth, was NEUTRAL)
 }
 
 // ---------------------------------------------------------------------------

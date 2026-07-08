@@ -55,7 +55,11 @@ SAMPLE_RATE    = 16000
 CHANNELS       = 2
 CHUNK          = 1024
 RECORD_SECONDS = 10
-SILENCE_SECS   = 1.5
+SILENCE_SECS   = 0.8   # RD-045 (S192h): was 1.5 -- guaranteed confirm-silence tax on every
+                       # adult turn; measured ambient RMS floor (~1) is far below SILENCE_RMS,
+                       # so the threshold itself wasn't miscalibrated -- this only trims the
+                       # wait. record_command's silence counter already resets on any voice
+                       # frame mid-count, so no separate "grace" logic was needed.
 SILENCE_RMS    = 300
 
 # Kids mode overrides -- applied dynamically when _kids_mode is True
@@ -111,6 +115,17 @@ SPEAKER_VOLUME = 121   # default 95%; overridden by iris_config.json
 
 # ── Follow-up / context ───────────────────────────────────────────────────────
 FOLLOWUP_TIMEOUT      = 2
+# S194 Rung3: when IRIS's reply ended in '?' she just asked the user a question --
+# a human pauses 2-4s to think before answering, so the 2s wait-for-speech-start
+# above kills the exchange it was meant to continue. Give a longer speech-start
+# window in that case (adult only; kids keeps KIDS_FOLLOWUP_TIMEOUT).
+FOLLOWUP_TIMEOUT_QUESTION     = 6.0
+# S194 Rung3: endpoint silence while the user answers a '?' reply -- mid-answer
+# thinking pauses ("it's... umm... seven?") exceed the 0.8s command endpoint and
+# clip the answer. Longer only for the answer-to-a-question case (adult only;
+# kids keeps KIDS_SILENCE_SECS). Main-turn command snappiness (SILENCE_SECS) is
+# untouched.
+SILENCE_SECS_FOLLOWUP         = 1.4
 KIDS_FOLLOWUP_TIMEOUT         = 15
 KIDS_MODE_INACTIVITY_TIMEOUT  = 1800   # 30 min -- auto-return to adult mode
 FOLLOWUP_SHORT_LEN    = 60
@@ -171,6 +186,12 @@ CAMERA_WIDTH   = 1024
 CAMERA_HEIGHT  = 768
 CAMERA_TIMEOUT = 5000
 VISION_MODEL   = "iris"
+# S194 Rung5: per-call budget for the Ollama vision POST. Was a hardcoded
+# timeout=120 in vision.py -- a hung/slow describe froze the whole turn up to
+# 2 min before any fallback. Measured live vision latency: 3.2s cold, 1.8s warm;
+# 40s gives generous headroom for concurrent-LLM 3090 contention while still
+# catching a genuine hang. WebUI-tunable (see _OVERRIDABLE); read per-call.
+VISION_TIMEOUT = 40
 
 VISION_TRIGGERS = {
     # contracted forms
@@ -192,6 +213,11 @@ VISION_TRIGGERS = {
 # ── Sleep window ─────────────────────────────────────────────────────────────
 SLEEP_WINDOW_START_HOUR = 21  # 9 PM
 SLEEP_WINDOW_END_HOUR   = 8   # 8 AM
+# S194: during the sleep window a lone wakeword just plays a quip and re-sleeps
+# (nights stay quiet). TWO wakewords within this many seconds break through to a
+# full listen-and-respond turn on demand; IRIS re-sleeps automatically after the
+# turn via the end-of-loop sleep-window check. WebUI-tunable; read once per loop.
+SLEEP_DOUBLE_WAKE_WINDOW_S = 10
 
 # ── Sleep animation CFG defaults (SLEEP_CFG: serial keys → Teensy sleepCfg) ─
 SLEEP_ANIM_SPEED          = 0.85
@@ -282,7 +308,8 @@ _OVERRIDABLE = {
     "RECORD_SECONDS", "SILENCE_SECS", "SILENCE_RMS",
     "KIDS_RECORD_SECONDS", "KIDS_SILENCE_SECS", "KIDS_SILENCE_RMS",
     "KIDS_GAP_FILLERS", "KIDS_THINK_FILLER_MS", "GESTURE_AUDIO_CUE", "GESTURE_MOUTH_CUE",
-    "OWW_THRESHOLD", "OWW_TRIGGER_LEVEL", "OWW_POST_PLAY_DRAIN_SECS", "FOLLOWUP_TIMEOUT", "KIDS_FOLLOWUP_TIMEOUT", "KIDS_MODE_INACTIVITY_TIMEOUT",
+    "OWW_THRESHOLD", "OWW_TRIGGER_LEVEL", "OWW_POST_PLAY_DRAIN_SECS", "FOLLOWUP_TIMEOUT", "FOLLOWUP_TIMEOUT_QUESTION", "SILENCE_SECS_FOLLOWUP", "KIDS_FOLLOWUP_TIMEOUT", "KIDS_MODE_INACTIVITY_TIMEOUT",
+    "VISION_TIMEOUT", "SLEEP_DOUBLE_WAKE_WINDOW_S",
     "FOLLOWUP_MAX_TURNS", "GAME_FOLLOWUP_TURNS", "GAME_REENTRY_GRACE_S", "CONTEXT_TIMEOUT_SECS", "NUM_PREDICT", "NUM_PREDICT_SHORT", "NUM_PREDICT_MEDIUM", "NUM_PREDICT_LONG", "NUM_PREDICT_MAX", "TTS_MAX_CHARS",
     "LOUD_STOP_THRESHOLD", "DEFAULT_EYE_IDX",
     "CHATTERBOX_VOICE", "CHATTERBOX_EXAGGERATION", "CHATTERBOX_ENABLED",
@@ -325,6 +352,10 @@ _TYPE_COERCE = {
     "OWW_THRESHOLD":           (float, (0.1, 1.0)),
     "OWW_TRIGGER_LEVEL":       (int,   (1, 5)),
     "FOLLOWUP_TIMEOUT":        (int,   (1, 60)),
+    "VISION_TIMEOUT":          (int,   (5, 180)),   # S194 Rung5: vision POST budget
+    "SLEEP_DOUBLE_WAKE_WINDOW_S":      (int,   (2, 60)),   # S194: double-wake sleep break-through
+    "FOLLOWUP_TIMEOUT_QUESTION":       (float, (1.0, 30.0)),   # S194 Rung3: wait after IRIS asks a question
+    "SILENCE_SECS_FOLLOWUP":          (float, (0.1, 10.0)),   # S194 Rung3: endpoint silence during that window
     "KIDS_FOLLOWUP_TIMEOUT":          (int,   (1, 120)),
     "KIDS_MODE_INACTIVITY_TIMEOUT":   (int,   (60, 7200)),
     "FOLLOWUP_MAX_TURNS":      (int,   (1, 20)),
@@ -423,40 +454,49 @@ def _coerce_value(key, val):
 
 _CONFIG_PATH = "/home/pi/iris_config.json"
 
-try:
-    with open(_CONFIG_PATH) as _f:
-        _cfg = _json.load(_f)
-    _applied = []
-    _ignored = []
-    for _k, _v in _cfg.items():
-        if _k in _OVERRIDABLE:
-            try:
-                _coerced, _warn = _coerce_value(_k, _v)
-                if _warn:
-                    print(f"[CFG]  WARN: {_warn}", flush=True)
-                globals()[_k] = _coerced
-                _applied.append(f"{_k}={_coerced!r}")
-            except (ValueError, TypeError) as _ce:
-                print(f"[CFG]  WARN: bad value for {_k}={_v!r} ({_ce}) -- keeping default", flush=True)
-        else:
-            _ignored.append(_k)
-    print(f"[CFG]  iris_config.json loaded: {', '.join(_applied) if _applied else 'no overrides'}", flush=True)
-    if _ignored:
-        print(f"[CFG]  iris_config.json ignored unknown keys: {_ignored}", flush=True)
-    # Dict overrides: EMOTION_MOUTH_MAP and EMOTION_EYE_MAP
-    _emm = _cfg.get("EMOTION_MOUTH_MAP")
-    if isinstance(_emm, dict):
-        for _e, _m in _emm.items():
-            if _e in VALID_EMOTIONS and isinstance(_m, int) and 0 <= _m <= 15:
-                MOUTH_MAP[_e] = _m
-    _eem = _cfg.get("EMOTION_EYE_MAP")
-    if isinstance(_eem, dict):
-        for _e, _idx in _eem.items():
-            if _e in VALID_EMOTIONS and isinstance(_idx, int) and -1 <= _idx <= 7:
-                EMOTION_EYE_MAP[_e] = _idx
-except FileNotFoundError:
-    print(f"[CFG]  iris_config.json not found, using defaults", flush=True)
-except _json.JSONDecodeError as _e:
-    print(f"[CFG]  iris_config.json parse error: {_e} -- using defaults", flush=True)
-except Exception as _e:
-    print(f"[CFG]  iris_config.json load failed: {_e} -- using defaults", flush=True)
+
+def reload_overrides():
+    """Re-read iris_config.json and re-apply _OVERRIDABLE keys to this module's
+    globals. Runs once at import (below) and can be called again later (S192b
+    AUD-5) so a WebUI save reaches an already-running process's config without
+    a service restart -- see assistant.py CMD RELOAD_CONFIG."""
+    try:
+        with open(_CONFIG_PATH) as _f:
+            _cfg = _json.load(_f)
+        _applied = []
+        _ignored = []
+        for _k, _v in _cfg.items():
+            if _k in _OVERRIDABLE:
+                try:
+                    _coerced, _warn = _coerce_value(_k, _v)
+                    if _warn:
+                        print(f"[CFG]  WARN: {_warn}", flush=True)
+                    globals()[_k] = _coerced
+                    _applied.append(f"{_k}={_coerced!r}")
+                except (ValueError, TypeError) as _ce:
+                    print(f"[CFG]  WARN: bad value for {_k}={_v!r} ({_ce}) -- keeping default", flush=True)
+            else:
+                _ignored.append(_k)
+        print(f"[CFG]  iris_config.json loaded: {', '.join(_applied) if _applied else 'no overrides'}", flush=True)
+        if _ignored:
+            print(f"[CFG]  iris_config.json ignored unknown keys: {_ignored}", flush=True)
+        # Dict overrides: EMOTION_MOUTH_MAP and EMOTION_EYE_MAP
+        _emm = _cfg.get("EMOTION_MOUTH_MAP")
+        if isinstance(_emm, dict):
+            for _e, _m in _emm.items():
+                if _e in VALID_EMOTIONS and isinstance(_m, int) and 0 <= _m <= 15:
+                    MOUTH_MAP[_e] = _m
+        _eem = _cfg.get("EMOTION_EYE_MAP")
+        if isinstance(_eem, dict):
+            for _e, _idx in _eem.items():
+                if _e in VALID_EMOTIONS and isinstance(_idx, int) and -1 <= _idx <= 7:
+                    EMOTION_EYE_MAP[_e] = _idx
+    except FileNotFoundError:
+        print(f"[CFG]  iris_config.json not found, using defaults", flush=True)
+    except _json.JSONDecodeError as _e:
+        print(f"[CFG]  iris_config.json parse error: {_e} -- using defaults", flush=True)
+    except Exception as _e:
+        print(f"[CFG]  iris_config.json load failed: {_e} -- using defaults", flush=True)
+
+
+reload_overrides()

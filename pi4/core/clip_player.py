@@ -11,12 +11,15 @@ import time
 _CLIPS_DIR = "/home/pi/clips"
 
 
-def play_clip(filename: str, stop_event=None) -> None:
+def play_clip(filename: str, stop_event=None) -> bool:
     """Play a WAV file from the clips directory.
     Uses aplay via plug:dmixed (shares the software mixer with PyAudio/dmix paths).
     Falls back to 'default' device if plug:dmixed exits non-zero.
     Polls stop_event every 50 ms and terminates aplay if set. Logs which device played.
-    Raises on file-not-found; logs and swallows aplay errors."""
+    Raises on file-not-found; logs and swallows aplay errors.
+    Returns True if a clip actually played (or was interrupted mid-play), False if
+    BOTH devices failed to play it. Backward-compatible: existing statement callers
+    ignore the return; speak_error() uses it so its fail-quiet contract is honest."""
     path = os.path.join(_CLIPS_DIR, filename)
     if not os.path.isfile(path):
         raise FileNotFoundError(f"[CLIP] Not found: {path}")
@@ -39,13 +42,19 @@ def play_clip(filename: str, stop_event=None) -> None:
     try:
         stopped, rc = _run("plug:dmixed")
         if stopped:
-            return
+            return True
         if rc == 0:
             print(f"[CLIP] Played: {filename} (device=plug:dmixed)", flush=True)
-            return
+            return True
         print(f"[CLIP] plug:dmixed failed (rc={rc}), retrying with default", flush=True)
-        stopped, _ = _run("default")
-        if not stopped:
+        stopped, rc2 = _run("default")
+        if stopped:
+            return True
+        if rc2 == 0:
             print(f"[CLIP] Played: {filename} (device=default)", flush=True)
+            return True
+        print(f"[CLIP] default also failed (rc={rc2}) -- clip did not play", flush=True)
+        return False
     except Exception as e:
         print(f"[CLIP] aplay error ({filename}): {e}", flush=True)
+        return False

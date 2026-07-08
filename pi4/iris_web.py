@@ -22,7 +22,6 @@ except Exception as _sb_e:
 GANDALF      = "192.168.1.3"
 OLLAMA_PORT  = 11434
 KOKORO_URL   = "http://192.168.1.3:8004"
-OGLE_URL     = "http://192.168.1.202"   # OGLE vision node management plane (RD-033)
 CONFIG_FILE  = "/home/pi/iris_config.json"
 SD_CONFIG    = "/media/root-ro/home/pi/iris_config.json"
 _WEB_DIR     = os.path.dirname(os.path.abspath(__file__))
@@ -179,6 +178,36 @@ def api_status():
     return jsonify(cpu_temp=cpu_temp(), running=running, uptime=uptime_str(),
                    sleeping=os.path.exists(SLEEP_FLAG))
 
+HEARTBEAT_FILE = "/tmp/iris_heartbeat.json"
+
+@app.route("/api/health")
+def api_health():
+    """S192m AUD-12/B4: main-loop liveness. Reads the heartbeat assistant.py's
+    main() stamps every loop iteration (/tmp/iris_heartbeat.json, atomic write)
+    and reports its age alongside the existing service-level facts, so a stall
+    inside a running process (systemd still sees it alive) is visible too --
+    not just a crashed/dead service."""
+    running = subprocess.run(["systemctl","is-active","assistant"],
+                             capture_output=True, text=True).stdout.strip() == "active"
+    hb = None
+    age_s = None
+    try:
+        with open(HEARTBEAT_FILE) as f:
+            hb = json.load(f)
+        age_s = round(time.time() - hb.get("ts", 0), 1)
+    except Exception:
+        pass
+    return jsonify(
+        running=running,
+        heartbeat_found=hb is not None,
+        heartbeat_age_s=age_s,
+        state=(hb.get("state") if hb else None),
+        loop_count=(hb.get("loop_count") if hb else None),
+        oww_restarts=(hb.get("oww_restarts") if hb else None),
+        uptime=uptime_str(),
+        cpu_temp=cpu_temp(),
+    )
+
 @app.route("/api/sysstat")
 def api_sysstat():
     """Live resource snapshot for the WebUI monitor (RD-032). Computed on request
@@ -242,6 +271,13 @@ def api_config():
         if "OWW_THRESHOLD" in patch:
             threading.Timer(0.3, lambda: subprocess.Popen(["sudo","systemctl","restart","assistant"])).start()
             return jsonify(ok=True, restarting_assistant=True)
+        # S192b AUD-5: a KOKORO_* save previously never reached the running
+        # assistant.py process (no restart, no reload signal) -- its in-memory
+        # core.config globals and quip cache stayed frozen at whatever voice was
+        # live at boot until a manual restart. Nudge it to reload live, same
+        # pattern as soundboard_api.py's RELOAD_SOUNDBOARD.
+        if any(k.startswith("KOKORO_") for k in patch):
+            send_teensy("RELOAD_CONFIG")
         return jsonify(ok=True)
     # Return all overridable defaults merged with current iris_config.json overrides
     # so web UI form fields always show the current effective value.
@@ -477,6 +513,16 @@ def api_gesture_stats():
 # the WebUI instead of reading the journal.
 _PS_FACE1_RE = re.compile(r'\bFACE:1\b')
 _PS_FACE0_RE = re.compile(r'\bFACE:0\b')
+# S185: bridge-side heartbeat (hardware/teensy_bridge.py) -- fires every ~60s
+# from the bridge's own in-memory last-known state, independent of whether a
+# real transition happened. Folded into the same last["detected"/"absent"/
+# "face1"/"face0"] fields the resolution logic below already uses, so a
+# steady-state sensor reads as current instead of aging into UNKNOWN.
+_PS_HEARTBEAT_RE = re.compile(r'PS_HEARTBEAT present=([01]) face=([01?])')
+# Printed on every serial (re)open, independent of PS state -- proves the USB/
+# serial link itself (not the sensor) is up, so a fresh restart with no PS
+# signal yet can be told apart from an actually-dead link.
+_PS_LINK_RE = re.compile(r'Teensy connected on')
 
 @app.route("/api/ps/status")
 def api_ps_status():
@@ -484,19 +530,27 @@ def api_ps_status():
         raw = subprocess.check_output(
             ["bash", "-c",
              "journalctl -u assistant -n 6000 --no-pager --output=short-iso "
-             "| grep -E 'Person Sensor detected|no ACK at 0x62|No Person Sensor|FACE:[01]' "
+             "| grep -E 'Person Sensor detected|no ACK at 0x62|No Person Sensor|FACE:[01]|PS_HEARTBEAT|Teensy connected on' "
              "| tail -250"],
             text=True, stderr=subprocess.DEVNULL).splitlines()
     except Exception:
         raw = []
-    last = {"detected": "", "absent": "", "face1": "", "face0": ""}
+    last = {"detected": "", "absent": "", "face1": "", "face0": "", "heartbeat": "", "link": ""}
     acquisitions = 0
     recent = []
     for line in raw:
         ts_m = _TS_RE.match(line)
         ts   = ts_m.group(1) if ts_m else ""
         ts_s = ts[11:19] if len(ts) >= 19 else ""
-        if "Person Sensor detected" in line:
+        m_hb = _PS_HEARTBEAT_RE.search(line)
+        if _PS_LINK_RE.search(line):
+            last["link"] = ts
+        elif m_hb:
+            last["heartbeat"] = ts
+            last["detected" if m_hb.group(1) == "1" else "absent"] = ts
+            if m_hb.group(2) != "?":
+                last["face1" if m_hb.group(2) == "1" else "face0"] = ts
+        elif "Person Sensor detected" in line:
             last["detected"] = ts
             recent.append({"ts": ts_s, "kind": "detected", "msg": "Person Sensor detected"})
         elif "no ACK at 0x62" in line or "No Person Sensor" in line:
@@ -526,11 +580,19 @@ def api_ps_status():
         state = "searching"
         label = ("SEARCHING — no I2C ACK at 0x62 yet "
                  "(cold-boot probe window, or loose/intermittent connector)")
+    elif last["link"]:
+        # The serial link itself is confirmed (a recent open/reconnect), just no
+        # PS-specific signal yet -- e.g. right after an assistant.service restart,
+        # since the Teensy keeps running and won't re-announce a steady state.
+        # This is NOT the same as a dead sensor/link; label it honestly.
+        state = "linked"
+        label = f"LINK OK — Teensy connected at {last['link'][11:19]}, no tracking event yet this session"
     else:
         state = "unknown"; label = "UNKNOWN — no recent sensor signal in journal"
     return jsonify(state=state, label=label, present=present,
                    last_detected=last["detected"], last_absent=last["absent"],
                    last_face1=last["face1"], last_face0=last["face0"],
+                   last_heartbeat=last["heartbeat"], last_link=last["link"],
                    acquisitions=acquisitions, recent=list(reversed(recent[-25:])))
 
 
@@ -1080,12 +1142,38 @@ def _read_ps_cfg():
         pass
     return cfg
 
+_PS_CFG_ACK_RE = re.compile(r'\[DBG\] PS_CFG (\w+)=(\S+)')
+
+def _read_ps_cfg_ack():
+    """Grep the Teensy's own '[DBG] PS_CFG KEY=value' ack lines (main.cpp echoes
+    every PS_CFG it parses). Proves a value was actually received by the Teensy,
+    as opposed to the sidecar file below which only records what the WebUI asked
+    for -- the two can differ if a UDP/serial write silently drops."""
+    try:
+        raw = subprocess.check_output(
+            ["bash", "-c",
+             "journalctl -u assistant -n 500 --no-pager --output=short-iso "
+             "| grep -F '[DBG] PS_CFG ' | tail -20"],
+            text=True, stderr=subprocess.DEVNULL).splitlines()
+    except Exception:
+        raw = []
+    ack = {}
+    for line in raw:
+        ts_m = _TS_RE.match(line)
+        ts = ts_m.group(1)[11:19] if ts_m else ""
+        m = _PS_CFG_ACK_RE.search(line)
+        if m and m.group(1) in _PS_CFG_DEFAULTS:
+            ack[m.group(1)] = {"value": m.group(2), "ts": ts}
+    return ack
+
 @app.route("/api/ps/config", methods=["GET", "POST"])
 def api_ps_config():
-    """GET: merged ps_config.json over defaults. POST: validate, write sidecar,
-    forward each PS_CFG:KEY=value live to the Teensy."""
+    """GET: merged ps_config.json over defaults + the Teensy's last ack per key.
+    POST: validate, write sidecar, forward each PS_CFG:KEY=value live to the Teensy."""
     if request.method == "GET":
-        return jsonify(_read_ps_cfg())
+        cfg = _read_ps_cfg()
+        cfg["ack"] = _read_ps_cfg_ack()
+        return jsonify(cfg)
     body = request.get_json(force=True) or {}
     update = {k: body[k] for k in _PS_CFG_DEFAULTS if k in body}
     if not update:
@@ -1192,195 +1280,6 @@ def api_servo_led():
         pass
     print(f"[SERVOLED] LED={on} sent={sent} persisted={persisted}")
     return jsonify(ok=True, LED=on, sent=sent, persisted=persisted)
-
-
-# ── OGLE vision node proxy (RD-033) ──────────────────────────────────────────────
-# The OGLE ESP32-S3 face-tracking camera (replaces the dead Teensy Person Sensor)
-# serves status/management JSON on its own static IP. We proxy it Pi4-side so the
-# browser never has to cross-origin / mixed-content to the node. The gaze DATA path
-# is USB-CDC (ogle_bridge) and is untouched by this — these are management-plane only.
-# Mirrors /api/sysstat: computed on request, short timeout, ~1 s cache, NEVER logged.
-_ogle_cache = {"t": 0.0, "data": None}
-
-@app.route("/api/ogle")
-def api_ogle():
-    """Proxy OGLE GET /health (cached ~1 s). Returns {ok, ...health} or {ok:False}."""
-    now = time.time()
-    if _ogle_cache["data"] is not None and now - _ogle_cache["t"] < 1.0:
-        return jsonify(_ogle_cache["data"])
-    try:
-        r = requests.get(f"{OGLE_URL}/health", timeout=1.5)
-        r.raise_for_status()
-        data = r.json()
-        data["ok"] = True
-    except Exception as e:
-        data = {"ok": False, "error": str(e)[:120]}
-    _ogle_cache["t"] = now
-    _ogle_cache["data"] = data
-    return jsonify(data)
-
-@app.route("/api/ogle/config", methods=["GET", "POST"])
-def api_ogle_config():
-    """Proxy OGLE runtime tuning (confidence / facing threshold / accurate-fast mode).
-    POST forwards conf/facing/mode as query args; OGLE persists them to NVS."""
-    try:
-        if request.method == "POST":
-            body = request.get_json(force=True) or {}
-            params = {}
-            if "conf"   in body: params["conf"]   = body["conf"]
-            if "facing" in body: params["facing"] = body["facing"]
-            if "mode"   in body: params["mode"]   = body["mode"]
-            r = requests.post(f"{OGLE_URL}/config", params=params, timeout=2.0)
-            _ogle_cache["t"] = 0.0   # force-refresh the health cache after a change
-        else:
-            r = requests.get(f"{OGLE_URL}/config", timeout=1.5)
-        r.raise_for_status()
-        return jsonify(ok=True, **r.json())
-    except Exception as e:
-        return jsonify(ok=False, error=str(e)[:120]), 502
-
-@app.route("/api/ogle/reboot", methods=["POST"])
-def api_ogle_reboot():
-    """Proxy OGLE POST /reboot — remote-restart the vision node."""
-    try:
-        r = requests.post(f"{OGLE_URL}/reboot", timeout=2.0)
-        r.raise_for_status()
-        return jsonify(ok=True, **r.json())
-    except Exception as e:
-        return jsonify(ok=False, error=str(e)[:120]), 502
-
-
-# ── OGLE bridge tuning (env vars in ogle-bridge.service) ─────────────────────
-_OGLE_SERVICE_FILE = "/etc/systemd/system/ogle-bridge.service"
-_SD_OGLE_SERVICE   = "/media/root-ro/etc/systemd/system/ogle-bridge.service"
-_OGLE_ENV_DEFAULTS = {
-    "OGLE_FACING_REQUIRED": "1",
-    "OGLE_CONF_GATE":       "60",
-    "OGLE_MIN_SIZE":        "1500",
-    "OGLE_LOST_TIMEOUT_S":  "1.0",
-    "OGLE_FLIP_X":          "1",
-    "OGLE_FLIP_Y":          "0",
-    "OGLE_Y_BIAS":          "-0.10",
-    "OGLE_EMA_ALPHA":       "0.4",
-    "OGLE_DEADBAND":        "0.03",
-    "OGLE_MAX_HZ":          "15",
-}
-
-@app.route("/api/ogle/bridge", methods=["GET", "POST"])
-def api_ogle_bridge():
-    """GET: return current OGLE bridge env vars from the service file.
-    POST: rewrite env lines, daemon-reload, restart ogle-bridge."""
-    if request.method == "GET":
-        vals = dict(_OGLE_ENV_DEFAULTS)
-        try:
-            with open(_OGLE_SERVICE_FILE) as f:
-                for line in f:
-                    s = line.strip()
-                    if s.startswith("Environment="):
-                        kv = s[len("Environment="):]
-                        k, _, v = kv.partition("=")
-                        if k in _OGLE_ENV_DEFAULTS:
-                            vals[k] = v
-        except Exception as e:
-            return jsonify(error=str(e)), 500
-        return jsonify(vals)
-    # POST: rewrite service file env block + restart
-    update = request.get_json(force=True) or {}
-    update = {k: str(v) for k, v in update.items() if k in _OGLE_ENV_DEFAULTS}
-    if not update:
-        # Nothing to rewrite — just reload and restart
-        subprocess.run(["sudo", "systemctl", "daemon-reload"], capture_output=True, timeout=5)
-        subprocess.run(["sudo", "systemctl", "restart", "ogle-bridge"], capture_output=True, timeout=10)
-        return jsonify(ok=True)
-    try:
-        with open(_OGLE_SERVICE_FILE) as f:
-            lines = f.readlines()
-    except Exception as e:
-        return jsonify(ok=False, error=str(e)), 500
-    if not lines:
-        return jsonify(ok=False, error="service file is empty — restore from repo before saving bridge config"), 500
-    new_lines = []
-    ogle_inserted = False
-    in_service = False
-    for line in lines:
-        s = line.strip()
-        if s == "[Service]":
-            in_service = True
-            new_lines.append(line)
-            continue
-        if s.startswith("[") and s != "[Service]":
-            if in_service and not ogle_inserted:
-                for k, v in update.items():
-                    new_lines.append(f"Environment={k}={v}\n")
-                ogle_inserted = True
-            in_service = False
-            new_lines.append(line)
-            continue
-        # Strip active or commented OGLE env lines for known keys
-        check = s.lstrip("# ").strip()
-        if check.startswith("Environment="):
-            k = check[len("Environment="):].split("=", 1)[0]
-            if k in _OGLE_ENV_DEFAULTS:
-                if in_service and not ogle_inserted:
-                    for uk, uv in update.items():
-                        new_lines.append(f"Environment={uk}={uv}\n")
-                    ogle_inserted = True
-                continue
-        new_lines.append(line)
-    content = "".join(new_lines)
-    if len(content) < 200:
-        return jsonify(ok=False, error=f"service file rewrite produced only {len(content)} bytes — aborted to protect config"), 500
-    import tempfile as _tf
-    with _tf.NamedTemporaryFile(mode="w", suffix=".service", delete=False) as tf:
-        tf.write(content)
-        tmp = tf.name
-    try:
-        r = subprocess.run(
-            ["sudo", "bash", "-c",
-             f"cp {tmp} {_OGLE_SERVICE_FILE} && chmod 644 {_OGLE_SERVICE_FILE}"],
-            capture_output=True, text=True, timeout=10)
-        try: os.unlink(tmp)
-        except Exception: pass
-        if r.returncode != 0:
-            return jsonify(ok=False, error=r.stderr.strip() or "write failed"), 500
-        subprocess.run(["sudo", "systemctl", "daemon-reload"],
-                       capture_output=True, timeout=5)
-        subprocess.run(["sudo", "systemctl", "restart", "ogle-bridge"],
-                       capture_output=True, timeout=10)
-        return jsonify(ok=True)
-    except Exception as e:
-        try: os.unlink(tmp)
-        except Exception: pass
-        return jsonify(ok=False, error=str(e)), 500
-
-
-@app.route("/api/ogle/bridge/persist", methods=["POST"])
-def api_ogle_bridge_persist():
-    """Persist ogle-bridge.service to SD via overlayfs dual-write. Returns ok + md5."""
-    try:
-        r = subprocess.run(
-            ["sudo", "bash", "-c",
-             f"mount -o remount,rw /media/root-ro && "
-             f"cp {_OGLE_SERVICE_FILE} {_SD_OGLE_SERVICE} && "
-             f"chmod 644 {_SD_OGLE_SERVICE} && "
-             f"sync && "
-             f"mount -o remount,ro /media/root-ro"],
-            capture_output=True, text=True, timeout=20)
-        if r.returncode != 0:
-            return jsonify(ok=False, error=r.stderr.strip() or "persist failed"), 500
-        md5_r = subprocess.run(
-            ["bash", "-c", f"md5sum {_OGLE_SERVICE_FILE} | awk '{{print $1}}'"],
-            capture_output=True, text=True, timeout=5)
-        md5_val = md5_r.stdout.strip()
-        match_r = subprocess.run(
-            ["bash", "-c",
-             f"md5sum {_OGLE_SERVICE_FILE} {_SD_OGLE_SERVICE} "
-             f"| awk '{{print $1}}' | sort -u | wc -l"],
-            capture_output=True, text=True, timeout=5)
-        verified = match_r.stdout.strip() == "1"
-        return jsonify(ok=verified, verified=verified, md5=md5_val)
-    except Exception as e:
-        return jsonify(ok=False, error=str(e)), 500
 
 
 # ── Clips (WS2A S158) ────────────────────────────────────────────────────────

@@ -8,6 +8,12 @@
 #define PAN_FILTER_ALPHA     0.08   // low-pass weight per tick at ~32 Hz → ~390 ms time constant (was 0.15)
 #define PAN_DEAD_ZONE_DEG    0.20   // ignore corrections < 0.20° (≈ 10 px sensor jitter); replaces old PAN_DEAD_ZONE/90 (was 2.8 px)
 #define PAN_MOVE_THRESHOLD_DEG 0.8  // min gap between filteredPan and servo's physical position to trigger startEaseTo
+#define FACE_POS_FILTER_ALPHA 0.12  // low-pass on raw sensor faceCenterX (px), applied BEFORE the dead-zone gate.
+                                    // Without this, single-frame face-box jitter from the Person Sensor's own
+                                    // detector (common even on a static, perpendicular face) fed straight into
+                                    // the desiredPan integrator below, so noisy frames that happened to exceed
+                                    // the dead zone nudged desiredPan permanently — a random walk that showed up
+                                    // as continuous side-to-side hunting on a subject who wasn't moving at all.
 
 // Face-lost timing (ms)
 #define FACE_HOLD_MS   2500

@@ -3,11 +3,11 @@
 iris_bench_report.py - Parse [BENCH] log lines and print pipeline timing summary.
 
 Usage:
-  sudo journalctl -u assistant -n 300 | python3 iris_bench_report.py
+  sudo journalctl -u iris-assistant.service -n 300 | python3 iris_bench_report.py
   cat /home/pi/logs/assistant.log | python3 iris_bench_report.py
 
 Columns: rec=recording, stt=Whisper, ttfc=time-to-first-chunk, llm=full stream,
-         tts=synthesis, aud=playback, TOTAL=wake→audio-done
+         tts=synthesis, aud=playback, TOTAL=wake->audio-done
 """
 
 import sys
@@ -61,10 +61,10 @@ def main():
         print("Ensure assistant.py + llm.py are the patched versions and the service is running.")
         return
 
-    print(f"\nIRIS Pipeline Benchmark  —  {len(cycles)} cycle(s)\n")
-    cols = f"{'#':>3}  {'time':>8}  {'trig':>4}  {'tier':>6}  {'np':>4}  " \
-           f"{'rec':>5}  {'stt':>5}  {'ttfc':>5}  {'llm':>5}  {'tts':>5}  {'aud':>5}  " \
-           f"{'TOTAL':>6}  {'eval/prompt':>11}  transcript"
+    print(f"\nIRIS Pipeline Benchmark  --  {len(cycles)} cycle(s)\n")
+    cols = (f"{'#':>3}  {'time':>8}  {'trig':>4}  {'tier':>6}  {'np':>4}  "
+            f"{'rec':>5}  {'stt':>5}  {'ttfc':>5}  {'llm':>5}  {'tts':>5}  {'aud':>5}  "
+            f"{'TOTAL':>6}  {'gap(ms/n)':>10}  {'eval/prompt':>11}  transcript")
     print(cols)
     print('-' * len(cols))
 
@@ -93,11 +93,16 @@ def main():
         p_tok    = os_d.get('prompt_tokens', '-')
         ep       = f"{e_tok}/{p_tok}"
 
+        gs       = c.get('gap_summary', {})
+        _gtot    = gs.get('gap_total_ms')
+        _gcnt    = gs.get('gap_count')
+        gap      = f"{_gtot}/{_gcnt}" if _gtot is not None else '-'
+
         snip     = c.get('stt_done', {}).get('transcript', '')[:22]
 
         print(f"{i:>3}  {ts:>8}  {trigger:>4}  {tier:>6}  {np_val:>4}  "
               f"{f(rec):>5}  {f(stt):>5}  {f(ttfc):>5}  {f(llm):>5}  "
-              f"{f(tts):>5}  {f(aud):>5}  {f(total):>6}  "
+              f"{f(tts):>5}  {f(aud):>5}  {f(total):>6}  {gap:>10}  "
               f"{ep:>11}  \"{snip}\"")
 
     print()

@@ -20,6 +20,9 @@ def wy_send(sock, etype, data, payload=b""):
 def read_line(sock, buf):
     """Read one newline-delimited frame from sock, returning (line_bytes, remaining_buf)."""
     while b"\n" not in buf:
-        buf += sock.recv(4096)
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ConnectionError("socket closed by peer")
+        buf += chunk
     nl = buf.index(b"\n")
     return buf[:nl], buf[nl + 1:]

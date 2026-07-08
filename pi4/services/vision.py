@@ -19,6 +19,13 @@ from core.config import (
 from services.llm import extract_emotion_from_reply
 
 
+def _vision_timeout() -> int:
+    """Per-call read of VISION_TIMEOUT so a WebUI change takes effect without an
+    assistant restart (same live-reload pattern KOKORO_SPEED uses). S194 Rung5."""
+    from core.config import VISION_TIMEOUT
+    return VISION_TIMEOUT
+
+
 def capture_image() -> bytes | None:
     """Capture a JPEG from the Pi camera. Returns bytes or None on failure."""
     for attempt in range(1, 3):
@@ -111,7 +118,7 @@ def ask_vision_game(image_bytes: bytes, game_prompt: str, model: str) -> tuple:
             "stream": False,
             "options": {"num_ctx": 6144},
         },
-        timeout=120,
+        timeout=_vision_timeout(),
     )
     try:
         r.raise_for_status()
@@ -139,21 +146,29 @@ def ask_vision(image_bytes: bytes, prompt: str) -> str:
         f"Otherwise describe the person generically. "
         f"The user asked: {prompt}"
     )
-    r = requests.post(
-        f"http://{GANDALF}:{OLLAMA_PORT}/api/generate",
-        json={
-            "model": VISION_MODEL,
-            "prompt": vision_prompt,
-            "images": [img_b64],
-            "stream": False,
-            # mistral-small3.2:24b encodes a camera frame to ~4570 vision tokens,
-            # which overflows the old 4096 default context window and returns
-            # HTTP 400 "exceeds the available context size". num_ctx 6144 keeps
-            # image+prompt+reply in context; matches the modelfile since S119b.
-            "options": {"num_ctx": 6144},
-        },
-        timeout=120,
-    )
+    try:
+        r = requests.post(
+            f"http://{GANDALF}:{OLLAMA_PORT}/api/generate",
+            json={
+                "model": VISION_MODEL,
+                "prompt": vision_prompt,
+                "images": [img_b64],
+                "stream": False,
+                # mistral-small3.2:24b encodes a camera frame to ~4570 vision tokens,
+                # which overflows the old 4096 default context window and returns
+                # HTTP 400 "exceeds the available context size". num_ctx 6144 keeps
+                # image+prompt+reply in context; matches the modelfile since S119b.
+                "options": {"num_ctx": 6144},
+            },
+            timeout=_vision_timeout(),
+        )
+    except requests.exceptions.Timeout:
+        # S194 Rung5: a hung/slow vision call no longer freezes the turn for 2 min.
+        print(f"[VIS]  Vision POST timed out after {_vision_timeout()}s", flush=True)
+        return "My eyes are running slow right now. Ask me again in a moment."
+    except requests.exceptions.ConnectionError:
+        print("[VIS]  Vision POST connection error -- GandalfAI unreachable", flush=True)
+        return "I can't reach my eyes at the moment."
     try:
         r.raise_for_status()
     except requests.exceptions.HTTPError as e:

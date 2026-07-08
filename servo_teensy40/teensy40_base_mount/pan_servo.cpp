@@ -5,6 +5,7 @@
 static ServoEasing panServo;
 static bool servoAttached = true;
 static float filteredPan = 90.0;  // low-pass smoothed command sent to servo
+static float filteredFaceCenterX = 128.0;  // low-pass smoothed raw sensor readout (see FACE_POS_FILTER_ALPHA)
 
 float desiredPan = 90.0;
 
@@ -18,7 +19,13 @@ void setupPanServo() {
 }
 
 void updatePanFromFace(float faceCenterX) {
-  float panDelta = (faceCenterX - 128) * PAN_SPEED;
+  // Smooth the raw sensor reading first — the Person Sensor's own face-box detector
+  // jitters frame to frame even on a static, perpendicular face. Feeding that noise
+  // straight into the dead-zone gate below let occasional noisy frames exceed the
+  // threshold and permanently nudge desiredPan, which random-walked into visible hunting.
+  filteredFaceCenterX += (faceCenterX - filteredFaceCenterX) * FACE_POS_FILTER_ALPHA;
+
+  float panDelta = (filteredFaceCenterX - 128) * PAN_SPEED;
 
   // Dead zone: ignore sub-threshold sensor jitter (~10 px)
   if (abs(panDelta) > PAN_DEAD_ZONE_DEG) {

@@ -29,7 +29,7 @@ from hardware.audio_io import (
 )
 from services.wyoming import wy_send, read_line
 from services.stt import transcribe
-from services.tts import synthesize, spoken_numbers
+from services.tts import synthesize, synthesize_captioned, spoken_numbers
 from services.llm import stream_ollama, classify_response_length
 from services.vision import (
     capture_image, is_vision_trigger, ask_vision, ask_vision_game, classify_camera_game,
@@ -42,6 +42,11 @@ from core.intent_router import (
 )
 from core.clip_triggers import check_clip_trigger
 from core.clip_player import play_clip
+from core.error_voice import speak_error
+from core.speech_gates import (
+    phrase_matches, is_whisper_hallucination, implies_followup,
+    WHISPER_HALLUCINATIONS, WHISPER_HALLUCINATION_PATTERNS,
+)
 
 
 def get_model() -> str:
@@ -167,6 +172,12 @@ _rpqr_state: dict = {
     "t_last_top_of_hour":   0.0,
 }
 
+# S194: sleep-window double-wake break-through. A lone wakeword during the sleep
+# window plays a quip and re-sleeps; a SECOND wakeword within
+# SLEEP_DOUBLE_WAKE_WINDOW_S falls through to a full listen-and-respond turn.
+# `t_last` stamps the previous in-window wake (0.0 = none pending / just consumed).
+_sleep_wake_state: dict = {"t_last": 0.0}
+
 # Camera-game cadence state (S168). `active` is True while a reciprocal camera
 # game (I Spy / Show Me / Face) is mid-flow so the follow-up loop keeps offering
 # turns, the double-beep is suppressed, and the RPQR wake-quip cascade is muted.
@@ -221,7 +232,16 @@ def _play_rpqr(line: str, emotion: str, pa, teensy, leds) -> None:
         print(f"[RPQR] Failed: {_e}", flush=True)
 
 
-def _pre_synthesize_quips() -> None:
+def _pre_synthesize_quips() -> bool:
+    # S188: GATE the warm on GandalfAI/Kokoro reachability. An unguarded
+    # synchronous warm here stalled the wakeword loop for minutes at boot when
+    # GandalfAI was asleep-by-design (~100 failing TTS connects), and pinned the
+    # GPU on every restart when it was up. Skip fast if unreachable; the
+    # background warmer (_bg_quip_warm) retries once GandalfAI comes up.
+    # Returns True if it actually warmed, False if skipped.
+    if not gandalf_is_up():
+        print("[QUIP] Warm skipped -- GandalfAI/Kokoro unreachable (will retry)", flush=True)
+        return False
     from core.config import KOKORO_SPEED_QUIPS
     unique_wake = {l for _, _, _, lines in _WAKE_QUIPS for l in lines}
     unique_wake.add("Yeah.")   # _pick_wake_quip fallback (no/empty band for hour)
@@ -277,13 +297,89 @@ def _pre_synthesize_quips() -> None:
             print(f"[GINTRO] Cached: {_gk}={_gp!r}", flush=True)
         except Exception as _e:
             print(f"[GINTRO] Cache miss '{_gk}': {_e}", flush=True)
+    return True
+
+
+def _bg_quip_warm(retry_s: int = 60) -> None:
+    """S188: Warm quip caches off the main thread, retrying until GandalfAI is
+    reachable, so the wakeword loop is never blocked by TTS warmup at boot."""
+    while True:
+        try:
+            if _pre_synthesize_quips():
+                return
+        except Exception as _e:
+            print(f"[QUIP] Background warm error: {_e}", flush=True)
+        time.sleep(retry_s)
+
+
+# S192m AUD-12/B4: main-loop liveness heartbeat. A few writes per minute (one
+# per wakeword-wait cycle + one per wake event), NOT per-frame -- respects the
+# no-unbounded-logging rule (feedback_no_unbounded_logging). /tmp is RAM, so
+# this is zero SD wear. Atomic write (temp file + os.replace) so a reader
+# never sees a half-written file.
+_HEARTBEAT_PATH = "/tmp/iris_heartbeat.json"
+_heartbeat_loop_count = 0
+_heartbeat_oww_restarts = 0
+
+
+def _write_heartbeat(state: str) -> None:
+    """Stamp /tmp/iris_heartbeat.json with the current loop state. state is
+    'waiting' (blocked in wait_for_wakeword_or_button) or 'processing' (handling
+    a wake/button trigger). Age = now - ts lets a reader (e.g. /api/health)
+    tell a live loop apart from a stalled one regardless of which state it was
+    last stamped in."""
+    global _heartbeat_loop_count
+    _heartbeat_loop_count += 1
+    _tmp_path = _HEARTBEAT_PATH + f".tmp{os.getpid()}"
+    try:
+        with open(_tmp_path, "w") as _f:
+            json.dump({
+                "ts": time.time(),
+                "state": state,
+                "loop_count": _heartbeat_loop_count,
+                "oww_restarts": _heartbeat_oww_restarts,
+            }, _f)
+        os.replace(_tmp_path, _HEARTBEAT_PATH)
+    except Exception as _e:
+        print(f"[HB] heartbeat write failed: {_e}", flush=True)
+
+
+_resynth_in_progress = threading.Lock()
+
+
+def _bg_reload_resynth(retry_s: int = 60) -> None:
+    """S192k AUD-11: background re-synth for reload_soundboard(), same
+    gate+thread+retry shape as _bg_quip_warm (S188). Runs off the CMD listener
+    thread so a WebUI soundboard/config save can't block STOP/gesture handling
+    behind ~100 synchronous TTS calls. Guarded by _resynth_in_progress so two
+    reloads fired back-to-back (RELOAD_SOUNDBOARD + RELOAD_CONFIG, or two rapid
+    WebUI saves) can't run concurrent re-synth passes."""
+    if not _resynth_in_progress.acquire(blocking=False):
+        print("[SOUNDBOARD] re-synth already in progress -- skipping duplicate reload", flush=True)
+        return
+    try:
+        while True:
+            try:
+                if _pre_synthesize_quips():
+                    print("[SOUNDBOARD] quips rebuilt + re-synthesized", flush=True)
+                    return
+            except Exception as _e:
+                print(f"[SOUNDBOARD] quip reload failed: {_e}", flush=True)
+                return
+            time.sleep(retry_s)
+    finally:
+        _resynth_in_progress.release()
 
 
 def reload_soundboard() -> None:
     """Re-read the soundboard after a WebUI save (CMD RELOAD_SOUNDBOARD): refresh
-    the enabled clip set and rebuild + re-synthesize all quip caches in-process,
-    so edits take effect without a service restart. Runs in the CMD listener
-    thread; best-effort, never fatal."""
+    the enabled clip set and rebuild quip caches in-process, so edits take effect
+    without a service restart. Runs in the CMD listener thread; best-effort,
+    never fatal. S192k AUD-11: the actual TTS re-synthesis (~100 Kokoro calls)
+    is backgrounded via _bg_reload_resynth() -- same gandalf_is_up() gate +
+    daemon-thread + retry shape as _bg_quip_warm (S188) -- so STOP/gesture
+    handling on the CMD listener thread is never blocked behind it. Only the
+    data-structure reload (fast) stays synchronous here."""
     global _WAKE_QUIPS, _DOUBLE_TAP_QUIPS, _POST_SPEECH_QUIPS
     global _KIDS_THINK_FILLERS, _GESTURE_CUES, _QCFG
     try:
@@ -303,8 +399,7 @@ def reload_soundboard() -> None:
         _rpqr_cache.clear()
         _kids_filler_cache.clear()
         _gesture_cue_cache.clear()
-        _pre_synthesize_quips()
-        print("[SOUNDBOARD] quips rebuilt + re-synthesized", flush=True)
+        threading.Thread(target=_bg_reload_resynth, name="reload-resynth", daemon=True).start()
     except Exception as _e:
         print(f"[SOUNDBOARD] quip reload failed: {_e}", flush=True)
 
@@ -339,19 +434,23 @@ def _context_watchdog():
         return
     while True:
         time.sleep(30)
-        if state.last_interaction == 0.0:
+        try:
+            if state.last_interaction == 0.0:
+                continue
+            elapsed = time.time() - state.last_interaction
+            if elapsed >= CONTEXT_TIMEOUT_SECS and state.conversation_history:
+                flush_conversation_log(reason="timeout")
+                state.clear_conversation()
+                state.last_interaction = 0.0
+                print(f"[CTX]  Context cleared after {CONTEXT_TIMEOUT_SECS}s of silence", flush=True)
+            if state.kids_mode and elapsed >= KIDS_MODE_INACTIVITY_TIMEOUT:
+                state.kids_mode = False
+                flush_conversation_log(reason="kids_mode_timeout")
+                state.clear_conversation()
+                print(f"[MODE] Kids mode auto-off after {KIDS_MODE_INACTIVITY_TIMEOUT}s inactivity", flush=True)
+        except Exception as e:
+            print(f"[CTX]  watchdog error: {e}", flush=True)
             continue
-        elapsed = time.time() - state.last_interaction
-        if elapsed >= CONTEXT_TIMEOUT_SECS and state.conversation_history:
-            flush_conversation_log(reason="timeout")
-            state.clear_conversation()
-            state.last_interaction = 0.0
-            print(f"[CTX]  Context cleared after {CONTEXT_TIMEOUT_SECS}s of silence", flush=True)
-        if state.kids_mode and elapsed >= KIDS_MODE_INACTIVITY_TIMEOUT:
-            state.kids_mode = False
-            flush_conversation_log(reason="kids_mode_timeout")
-            state.clear_conversation()
-            print(f"[MODE] Kids mode auto-off after {KIDS_MODE_INACTIVITY_TIMEOUT}s inactivity", flush=True)
 
 
 # ── WoL + GandalfAI readiness ─────────────────────────────────────────────────
@@ -380,6 +479,8 @@ def ensure_gandalf_up(leds, pa=None) -> bool:
     send_wol(GANDALF_MAC, GANDALF_WOL_IP, GANDALF_WOL_PORT)
     if pa is not None:
         play_wol_beep(pa)
+    # S194 Rung6: say something while the brain boots, instead of a bare beep.
+    speak_error("GANDALF_WAKING")
 
     leds.show_wol()
     deadline = time.monotonic() + WOL_BOOT_TIMEOUT
@@ -392,6 +493,8 @@ def ensure_gandalf_up(leds, pa=None) -> bool:
         print(f"[WOL]  Waiting for GandalfAI... ({int(deadline-time.monotonic())}s remaining)", flush=True)
     leds.stop_anim()
     print("[ERR]  GandalfAI did not come up in time.", flush=True)
+    # S194 Rung6: don't fail silent -- tell the operator the brain didn't wake.
+    speak_error("GANDALF_WAKE_FAIL")
     return False
 
 
@@ -426,43 +529,59 @@ def _play_gesture_cue(token, pa, teensy):
 def start_cmd_listener(teensy, leds, pa=None):
     """UDP listener on CMD_PORT. iris_web.py sends raw commands here."""
     def _listener():
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(("127.0.0.1", CMD_PORT))
-            print(f"[CMD] Listening for web UI commands on UDP port {CMD_PORT}", flush=True)
-            while True:
-                try:
-                    data, _ = s.recvfrom(256)
-                    cmd = data.decode(errors="ignore").strip()
-                    if cmd:
-                        if cmd in ("STOP_PLAYBACK", "STOP"):
-                            _stop_playback.set()
-                            print(f"[CMD] {cmd}: playback interrupted", flush=True)
-                        elif cmd == "RELOAD_SOUNDBOARD":
-                            print("[CMD] RELOAD_SOUNDBOARD", flush=True)
-                            reload_soundboard()
-                        elif cmd.startswith("GCUE:"):
-                            # Gesture acknowledgment from the base mount bridge.
-                            _play_gesture_cue(cmd[5:].strip(), pa, teensy)
-                        else:
-                            # RD-033: GAZE: arrives at the OGLE frame rate; don't log
-                            # it per-packet (RD-031). The teensy_bridge >> echo behind
-                            # IRIS_DEBUG_SERIAL=1 is the debug surface for gaze traffic.
-                            if not cmd.startswith("GAZE:"):
-                                print(f"[CMD] -> teensy: {cmd}", flush=True)
-                            if state.eyes_sleeping and (
-                                cmd.startswith("EMOTION:") or cmd.startswith("EYE:")
-                                or cmd.startswith("MOUTH:")
-                            ):
-                                _do_wake(teensy, leds)
-                                print(f"[CMD] Auto-woke eyes for: {cmd}", flush=True)
-                            teensy.send_command(cmd)
-                            if cmd == "EYES:SLEEP":
-                                _do_sleep(teensy, leds)
-                            elif cmd == "EYES:WAKE":
-                                _do_wake(teensy, leds)
-                except Exception as e:
-                    print(f"[CMD] Listener error: {e}", flush=True)
+        while True:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    s.bind(("127.0.0.1", CMD_PORT))
+                    print(f"[CMD] Listening for web UI commands on UDP port {CMD_PORT}", flush=True)
+                    while True:
+                        try:
+                            data, _ = s.recvfrom(256)
+                            cmd = data.decode(errors="ignore").strip()
+                            if cmd:
+                                if cmd in ("STOP_PLAYBACK", "STOP"):
+                                    _stop_playback.set()
+                                    print(f"[CMD] {cmd}: playback interrupted", flush=True)
+                                elif cmd == "RELOAD_SOUNDBOARD":
+                                    print("[CMD] RELOAD_SOUNDBOARD", flush=True)
+                                    reload_soundboard()
+                                elif cmd == "RELOAD_CONFIG":
+                                    # S192b AUD-5: WebUI Voice-tab saves send this so a
+                                    # KOKORO_VOICE/KOKORO_SPEED* change reaches the quip
+                                    # cache without a service restart -- re-read
+                                    # iris_config.json into core.config's live globals,
+                                    # then reuse reload_soundboard()'s cache-clear +
+                                    # re-synth (harmless extra soundboard-data reread).
+                                    print("[CMD] RELOAD_CONFIG", flush=True)
+                                    import core.config as _cfg_mod
+                                    _cfg_mod.reload_overrides()
+                                    reload_soundboard()
+                                elif cmd.startswith("GCUE:"):
+                                    # Gesture acknowledgment from the base mount bridge.
+                                    _play_gesture_cue(cmd[5:].strip(), pa, teensy)
+                                else:
+                                    # RD-033: GAZE: arrives at the OGLE frame rate; don't log
+                                    # it per-packet (RD-031). The teensy_bridge >> echo behind
+                                    # IRIS_DEBUG_SERIAL=1 is the debug surface for gaze traffic.
+                                    if not cmd.startswith("GAZE:"):
+                                        print(f"[CMD] -> teensy: {cmd}", flush=True)
+                                    if state.eyes_sleeping and (
+                                        cmd.startswith("EMOTION:") or cmd.startswith("EYE:")
+                                        or cmd.startswith("MOUTH:")
+                                    ):
+                                        _do_wake(teensy, leds)
+                                        print(f"[CMD] Auto-woke eyes for: {cmd}", flush=True)
+                                    teensy.send_command(cmd)
+                                    if cmd == "EYES:SLEEP":
+                                        _do_sleep(teensy, leds)
+                                    elif cmd == "EYES:WAKE":
+                                        _do_wake(teensy, leds)
+                        except Exception as e:
+                            print(f"[CMD] Listener error: {e}", flush=True)
+            except Exception as e:
+                print(f"[CMD] listener crashed: {e} -- retrying in 5s", flush=True)
+                time.sleep(5)
     threading.Thread(target=_listener, daemon=True).start()
 
 
@@ -526,6 +645,26 @@ def handle_time_command(text: str):
     elif is_time: return f"It is {time_str}."
     else: return f"Today is {day_name}, {month_name} {now.tm_mday}, {now.tm_year}."
 
+
+def _speak_simple(reply, reply_chars, route, label, teensy, leds, pa, mic,
+                   bench_stages, t_mono_wake, bench_transcript, gandalf_was_cold):
+    """Synthesize a single already-decided reply and play it as one blob (no
+    streaming), then write the bench row. Extracted from main() (S192e, audit
+    AUD-2): six route handlers -- reflex sleep, kids-mode switch, volume,
+    vision, utility, ambiguous sleep -- carried this exact block with only the
+    reply text/char-count, bench route, and error-log label varying. Mirrors
+    the original try/except boundary exactly: if synthesize() raises, nothing
+    plays and the single [ERR] line below is the only output."""
+    try:
+        pcm_data = synthesize(reply)
+        leds.show_speaking(); mic.stop_stream()
+        _t_mono_play = time.monotonic()
+        try: bench_stages["play_start_ms"] = round((_t_mono_play - t_mono_wake) * 1000)
+        except Exception: pass
+        play_pcm_speaking(pcm_data, pa, teensy); mic.start_stream()
+        _bench_write(bench_stages, bench_transcript, reply_chars, get_model(), gandalf_was_cold, route, False)
+    except Exception as e:
+        print(f"[ERR]  TTS {label}: {e}", flush=True)
 
 
 # ── LLM helpers ───────────────────────────────────────────────────────────────
@@ -659,10 +798,17 @@ def _speak_llm_turn(text, num_predict, teensy, leds, pa, mic,
         threading.Thread(target=_kids_gap_filler, daemon=True).start()
 
     def _run_player(_emotion):
-        _player_result["interrupted"] = play_pcm_stream(
-            _pcm_q, pa, teensy, emotion=_emotion,
-            restore_mouth_idx=MOUTH_MAP.get(_emotion, 0),
-            interrupted=_player_interrupted)
+        # bench_stages is the stats sink for P4 gap telemetry (S192f/D1): the
+        # player fills gap_count/gap_total_ms/gap_max_ms/blobs_played into it at
+        # drain, and the caller's _bench_write serializes the whole dict.
+        try:
+            _player_result["interrupted"] = play_pcm_stream(
+                _pcm_q, pa, teensy, emotion=_emotion,
+                restore_mouth_idx=MOUTH_MAP.get(_emotion, 0),
+                interrupted=_player_interrupted, stats=bench_stages)
+        except Exception as e:
+            print(f"[ERR]  player thread crashed: {e}", flush=True)
+            _player_result["interrupted"] = True
 
     try:
         for chunk, chunk_emotion in stream_ollama(
@@ -695,11 +841,14 @@ def _speak_llm_turn(text, num_predict, teensy, leds, pa, mic,
                 _bench_first_chunk = False
             reply_parts.append(chunk)
 
-            # Synthesize this sentence. synthesize() does Kokoro->Piper
-            # fallback internally; it only raises if BOTH engines fail, in
-            # which case skip this sentence rather than killing the turn.
+            # Synthesize this sentence. synthesize_captioned() returns
+            # (pcm, mouth_timeline): the timeline comes from Kokoro's real
+            # per-word timestamps (RD-044) and is None when word timing is
+            # unavailable (F5 active / Kokoro down / captioned failed), in which
+            # case the player falls back to the legacy fixed-timer mouth. It only
+            # raises if TTS fully fails; then skip this sentence, not the turn.
             try:
-                _pcm = synthesize(chunk)
+                _pcm, _mouth_tl = synthesize_captioned(chunk)
             except Exception as _se:
                 print(f"[ERR]  TTS sentence skipped: {_se}", flush=True)
                 continue
@@ -742,7 +891,7 @@ def _speak_llm_turn(text, num_predict, teensy, leds, pa, mic,
                     _player_thread.start()
                     _tts_active.set()  # suppress gesture audio cues while speaking
 
-            _pcm_q.put(_pcm)
+            _pcm_q.put((_pcm, _mouth_tl))
             _tts_chars += len(chunk)
     except Exception as e:
         print(f"[ERR]  LLM stream: {e}", flush=True)
@@ -769,7 +918,10 @@ def _speak_llm_turn(text, num_predict, teensy, leds, pa, mic,
     # Signal end-of-stream and wait for overlapped playback to drain.
     if _player_thread is not None:
         _pcm_q.put(None)
-        _player_thread.join()
+        _player_thread.join(timeout=180)
+        if _player_thread.is_alive():
+            print("[ERR]  player thread failed to drain in 180s -- abandoning turn", flush=True)
+            _interrupted = True
         _interrupted = _player_result["interrupted"] or _interrupted
     elif not reply:
         print("[LLM]  Empty reply -- nothing to play", flush=True)
@@ -793,7 +945,10 @@ def _speak_llm_turn(text, num_predict, teensy, leds, pa, mic,
         if not (state.conversation_history and state.conversation_history[0].get("content", "").startswith("[Earlier conversation")):
             state.conversation_history.insert(0, {"role": "assistant", "content": "[Earlier conversation omitted]"})
 
-    return reply, _current_emotion, _interrupted, True
+    _no_audio = bool(reply) and _player_thread is None and not _interrupted
+    if _no_audio:
+        print("[ERR]  turn produced no audio (all TTS failed) -- reporting failure", flush=True)
+    return reply, _current_emotion, _interrupted, (not _no_audio)
 
 
 # ── Kids camera games (S144) ──────────────────────────────────────────────────
@@ -979,33 +1134,26 @@ def _play_camera_game_followup(game, guess, teensy, leds, pa, mic, bench_stages,
 
 
 # ── Follow-up ─────────────────────────────────────────────────────────────────
+# implies_followup() moved to core/speech_gates.py (S192 AUD-7 test-suite
+# session) -- pure predicate, no behavior change, imported below.
 
-_GAME_CONTINUE_CUES = (
-    "try again", "guess again", "another", "one more", "keep going",
-    "so close", "close", "nope", "not quite", "you got it", "got it",
-    "your turn", "go again", "ready", "what else",
-)
-
-def implies_followup(reply: str, in_game: bool = False) -> bool:
-    r = reply.strip()
-    if r.endswith('?'): return True
-    rl = r.lower()
-    if any(rl.endswith(p) or rl.endswith(p+'.') for p in
-           ("want me to", "shall i", "would you like me to", "let me know if", "go ahead")):
-        return True
-    # In a reciprocal camera game, exclamation-ended reactions ("Nope! Try
-    # again!", "You got it!") must keep the loop alive even without a '?'.
-    if in_game and any(c in rl for c in _GAME_CONTINUE_CUES):
-        return True
-    return False
-
-def record_followup(mic, pa, leds, timeout=None, play_beep=True):
+def record_followup(mic, pa, leds, timeout=None, play_beep=True, asked_question=False):
+    # S194 Rung3: when IRIS just asked the user a question (reply ended in '?'),
+    # give a longer speech-start window and a longer endpoint so a natural
+    # think-then-answer pause doesn't kill the exchange (adult only; kids keeps
+    # its own longer windows). Non-question invites keep the snappy 2.0/0.8.
     if timeout is None:
-        timeout = KIDS_FOLLOWUP_TIMEOUT if state.kids_mode else FOLLOWUP_TIMEOUT
+        if state.kids_mode:
+            timeout = KIDS_FOLLOWUP_TIMEOUT
+        else:
+            timeout = FOLLOWUP_TIMEOUT_QUESTION if asked_question else FOLLOWUP_TIMEOUT
     leds.show_followup()
     if play_beep: play_double_beep(pa)
     frames = []; silence = 0; speech_detected = False
-    sil_secs  = KIDS_SILENCE_SECS   if state.kids_mode else SILENCE_SECS
+    if state.kids_mode:
+        sil_secs = KIDS_SILENCE_SECS
+    else:
+        sil_secs = SILENCE_SECS_FOLLOWUP if asked_question else SILENCE_SECS
     sil_rms   = KIDS_SILENCE_RMS    if state.kids_mode else SILENCE_RMS
     rec_secs  = KIDS_RECORD_SECONDS if state.kids_mode else RECORD_SECONDS
     sil_limit = int(SAMPLE_RATE / CHUNK * sil_secs)
@@ -1243,7 +1391,9 @@ def main():
     teensy.send_command(f"EYE:{DEFAULT_EYE_IDX}")
     print(f"[EYES] Default eye restored: EYE:{DEFAULT_EYE_IDX}", flush=True)
     _push_ps_config(teensy)
-    _pre_synthesize_quips()
+    # S188: warm quips in the background (gated + retried) so a sleeping
+    # GandalfAI can never block the wakeword loop at boot.
+    threading.Thread(target=_bg_quip_warm, name="quip-warm", daemon=True).start()
     # Pre-warm Ollama: eliminates ~10-12s cold-start penalty on first user interaction
     if gandalf_is_up():
         try:
@@ -1259,23 +1409,33 @@ def main():
             print(f"[LLM]  Warmup skipped: {_e}", flush=True)
     # ─────────────────────────────────────────────────────────────────────────
 
-    # ── Sleep-state reconciliation ────────────────────────────────────────────
+    # ── Sleep-state reconciliation (clock-authoritative, S193) ────────────────
     # state.eyes_sleeping is in-memory and defaults False; the /tmp flag lives in
-    # RAM and is cleared on full reboot. Either an assistant restart (flag may
-    # survive) or a full reboot (flag gone) during the sleep window would leave
-    # the Pi awake while the clock says bedtime. Reconcile from ground truth at
-    # startup: if we're inside the sleep window OR the flag is set, re-assert
-    # sleep authoritatively (idempotent — _do_sleep is safe to call when already
-    # asleep). This hardens the scheduled sleep against restarts/reboots.
-    if in_sleep_window() or os.path.exists('/tmp/iris_sleep_mode'):
+    # RAM and survives a service restart (only a full reboot clears it). The wall
+    # clock is the source of truth at startup:
+    #   * inside the sleep window  -> it is bedtime, (re-)assert sleep (idempotent).
+    #   * flag present but daytime -> a wake was MISSED (a restart carried a stale
+    #     flag forward). Wake and clear the flag; do NOT re-sleep through the day.
+    # (S193 Bug B: the old code trusted the flag OR the window and could pin IRIS
+    #  asleep all day until the next 08:00 wake cron whenever a stale flag existed
+    #  at a daytime restart.)
+    if in_sleep_window():
         _do_sleep(teensy, leds)
-        print("[SLEEP] Startup reconcile: sleep window/flag active -- sleep re-asserted", flush=True)
+        print("[SLEEP] Startup reconcile: sleep window active -- sleep re-asserted", flush=True)
+    elif os.path.exists('/tmp/iris_sleep_mode'):
+        _do_wake(teensy, leds)
+        print("[WAKE] Startup reconcile: stale sleep flag cleared (daytime) -- woke", flush=True)
 
     try:
         while True:
+            # S192m AUD-12/B4: stamp liveness at the top of every loop iteration.
+            _write_heartbeat("processing")
+
             # Restart OWW process if it has died
             if oww_proc is None or oww_proc.poll() is not None:
                 print("[WARN] openwakeword process not running -- attempting restart", flush=True)
+                global _heartbeat_oww_restarts
+                _heartbeat_oww_restarts += 1
                 if oww_proc is not None:
                     try: oww_proc.kill()
                     except Exception: pass
@@ -1297,6 +1457,10 @@ def main():
                 print(f"[ERR] Cannot connect to openwakeword: {e} -- retrying in 5s", flush=True)
                 leds.show_error(); time.sleep(5); show_idle_for_mode(leds); continue
 
+            # S192m AUD-12/B4: stamp just before the blocking wait -- this call
+            # can block indefinitely between wakes, so age-since-'waiting' is
+            # the normal/expected state, not a stall signal on its own.
+            _write_heartbeat("waiting")
             try:
                 trigger = wait_for_wakeword_or_button(mic, oww_sock)
             except Exception as e:
@@ -1322,17 +1486,29 @@ def main():
             _bench_reply_chars = 0
             _bench_route = ROUTE_LLM
             _bench_interrupted = False
+            _sleep_break = False   # S194: True when a double-wake breaks through the sleep window
 
             if ptt_mode: print("\n[PTT]  Button pressed", flush=True); leds.show_ptt()
             else: print("\n[WAKE] Wake word detected", flush=True); leds.show_wake()
 
-            # Sleep mode check — quip is pre-cached PCM, no Gandalf needed
+            # Sleep mode check — quip is pre-cached PCM, no Gandalf needed.
+            # S194: a lone wakeword plays a quip and re-sleeps (nights stay quiet);
+            # a SECOND wakeword within SLEEP_DOUBLE_WAKE_WINDOW_S breaks through to a
+            # full listen-and-respond turn on demand. The end-of-loop sleep-window
+            # check re-sleeps IRIS automatically after the break-through turn.
             if os.path.exists('/tmp/iris_sleep_mode'):
                 _do_wake(teensy, leds)
-                _play_wake_quip(time.localtime().tm_hour, pa, teensy, leds)
-                if in_sleep_window():
-                    _do_sleep(teensy, leds)
-                show_idle_for_mode(leds); continue
+                _now_sw = time.time()
+                _double_wake = (_sleep_wake_state["t_last"] > 0.0
+                                and _now_sw - _sleep_wake_state["t_last"] <= SLEEP_DOUBLE_WAKE_WINDOW_S)
+                _sleep_wake_state["t_last"] = 0.0 if _double_wake else _now_sw
+                if not _double_wake:
+                    _play_wake_quip(time.localtime().tm_hour, pa, teensy, leds)
+                    if in_sleep_window():
+                        _do_sleep(teensy, leds)
+                    show_idle_for_mode(leds); continue
+                print("[WAKE] Double wakeword in sleep window -- breaking through to a full listen", flush=True)
+                _sleep_break = True   # skips the RPQR quip cascade below; falls through to record
 
             # ── RPQR trigger cascade (pre-cached PCM, fires before Gandalf gate) ──
             import random as _rnd
@@ -1355,7 +1531,9 @@ def main():
             _game_recent = (_cam_game_state["active"]
                             or (_cam_game_state["t_ended"] > 0
                                 and _now_rpqr - _cam_game_state["t_ended"] < GAME_REENTRY_GRACE_S))
-            if _game_recent:
+            if _sleep_break:
+                print("[RPQR] Suppressed (sleep break-through -- going straight to listen)", flush=True)
+            elif _game_recent:
                 print("[RPQR] Suppressed (camera game active/grace)", flush=True)
             elif _is_new_day and _fod_cfg.get("enabled", True):
                 _play_rpqr(_first_of_day_line(_h_rpqr),
@@ -1425,7 +1603,11 @@ def main():
             try: text = transcribe(raw)
             except Exception as e:
                 print(f"[ERR]  STT: {e}", flush=True)
-                leds.show_error(); time.sleep(1); show_idle_for_mode(leds); continue
+                leds.show_error()
+                # S194 Rung6: speak the failure; keep the 1s LED hold only if no clip.
+                if not speak_error("STT_FAIL"):
+                    time.sleep(1)
+                show_idle_for_mode(leds); continue
 
             if not text:
                 print("[STT]  Empty transcript", flush=True); show_idle_for_mode(leds); continue
@@ -1444,9 +1626,8 @@ def main():
 
             # ── STOP phrase gate (pre-router; mirrors follow-up loop) ─────────────
             # Exact match or phrase followed by space — avoids false matches on
-            # "stopwatch", "quietly", "cancelled", etc.
-            if any(_text_norm == phrase or _text_norm.startswith(phrase + " ")
-                   for phrase in STOP_PHRASES):
+            # "stopwatch", "quietly", "cancelled", etc. (core.speech_gates.phrase_matches)
+            if phrase_matches(_text_norm, STOP_PHRASES):
                 print(f"[STOP] Main-loop STOP phrase: '{text}'", flush=True)
                 _stop_playback.set()
                 emit_emotion(teensy, leds, "NEUTRAL")
@@ -1454,17 +1635,10 @@ def main():
                 print("[INFO] Ready.", flush=True)
                 continue
 
-            _WHISPER_HALLUCINATIONS = {
-                "thank you", "thanks", "thank you very much", "thanks for watching",
-                "you", "the", "bye", "bye bye", "goodbye", "see you next time",
-                "please subscribe", ".", "", " ",
-            }
-            _WHISPER_HALLUCINATION_PATTERNS = (
-                "for more information", "visit www.", "www.", ".gov", ".com",
-                "subscribe to", "like and subscribe", "don't forget to",
-            )
-            if _text_norm in _WHISPER_HALLUCINATIONS or \
-               any(_text_norm.startswith(p) or p in _text_norm for p in _WHISPER_HALLUCINATION_PATTERNS):
+            # Whisper hallucination gate: shared with the follow-up loop via
+            # core.speech_gates (S191 audit AUD-1 -- these had drifted apart into
+            # two separately-maintained inline copies; now one definition).
+            if is_whisper_hallucination(_text_norm):
                 print(f"[STT]  Hallucination filtered: '{text}'", flush=True)
                 show_idle_for_mode(leds); continue
 
@@ -1506,16 +1680,9 @@ def main():
                 if _result.action == "SLEEP":
                     _do_sleep(teensy, leds)
                     if _result.response:
-                        try:
-                            pcm_data = synthesize(_result.response)
-                            leds.show_speaking(); mic.stop_stream()
-                            _t_mono_play = time.monotonic()
-                            try: _bench_stages["play_start_ms"] = round((_t_mono_play - _t_mono_wake) * 1000)
-                            except Exception: pass
-                            play_pcm_speaking(pcm_data, pa, teensy); mic.start_stream()
-                            _bench_write(_bench_stages, _bench_transcript, 0, get_model(), _gandalf_was_cold, ROUTE_REFLEX, False)
-                        except Exception as e:
-                            print(f"[ERR]  TTS reflex sleep: {e}", flush=True)
+                        _speak_simple(_result.response, 0, ROUTE_REFLEX, "reflex sleep",
+                                      teensy, leds, pa, mic, _bench_stages, _t_mono_wake,
+                                      _bench_transcript, _gandalf_was_cold)
                     show_idle_for_mode(leds); print("[INFO] Ready.", flush=True); continue
                 elif _result.action == "STOP":
                     print("[STOP] Stop command received", flush=True)
@@ -1544,16 +1711,9 @@ def main():
                         print(f"[MODE] {kids_reply}", flush=True)
                         leds.show_kids_mode_on() if new_mode else leds.show_kids_mode_off()
                         time.sleep(0.6)
-                        try:
-                            pcm_data = synthesize(kids_reply)
-                            leds.show_speaking(); mic.stop_stream()
-                            _t_mono_play = time.monotonic()
-                            try: _bench_stages["play_start_ms"] = round((_t_mono_play - _t_mono_wake) * 1000)
-                            except Exception: pass
-                            play_pcm_speaking(pcm_data, pa, teensy); mic.start_stream()
-                            _bench_write(_bench_stages, _bench_transcript, 0, get_model(), _gandalf_was_cold, ROUTE_COMMAND, False)
-                        except Exception as e:
-                            print(f"[ERR]  TTS mode switch: {e}", flush=True)
+                        _speak_simple(kids_reply, 0, ROUTE_COMMAND, "mode switch",
+                                      teensy, leds, pa, mic, _bench_stages, _t_mono_wake,
+                                      _bench_transcript, _gandalf_was_cold)
                     emit_emotion(teensy, leds, "NEUTRAL"); show_idle_for_mode(leds)
                     print("[INFO] Ready.", flush=True); continue
                 else:
@@ -1561,16 +1721,9 @@ def main():
                     vol_reply = handle_volume_command(text)
                     if vol_reply is not None:
                         print(f"[VOL]  {vol_reply}", flush=True)
-                        try:
-                            pcm_data = synthesize(vol_reply)
-                            leds.show_speaking(); mic.stop_stream()
-                            _t_mono_play = time.monotonic()
-                            try: _bench_stages["play_start_ms"] = round((_t_mono_play - _t_mono_wake) * 1000)
-                            except Exception: pass
-                            play_pcm_speaking(pcm_data, pa, teensy); mic.start_stream()
-                            _bench_write(_bench_stages, _bench_transcript, 0, get_model(), _gandalf_was_cold, ROUTE_COMMAND, False)
-                        except Exception as e:
-                            print(f"[ERR]  TTS vol: {e}", flush=True)
+                        _speak_simple(vol_reply, 0, ROUTE_COMMAND, "vol",
+                                      teensy, leds, pa, mic, _bench_stages, _t_mono_wake,
+                                      _bench_transcript, _gandalf_was_cold)
                         emit_emotion(teensy, leds, "NEUTRAL"); show_idle_for_mode(leds)
                         print("[INFO] Ready.", flush=True); continue
 
@@ -1590,30 +1743,16 @@ def main():
                             except Exception as e:
                                 reply = "I had trouble processing the image."
                                 print(f"[ERR]  Vision: {e}", flush=True)
-                        try:
-                            pcm_data = synthesize(reply)
-                            leds.show_speaking(); mic.stop_stream()
-                            _t_mono_play = time.monotonic()
-                            try: _bench_stages["play_start_ms"] = round((_t_mono_play - _t_mono_wake) * 1000)
-                            except Exception: pass
-                            play_pcm_speaking(pcm_data, pa, teensy); mic.start_stream()
-                            _bench_write(_bench_stages, _bench_transcript, len(reply), get_model(), _gandalf_was_cold, ROUTE_UTILITY, False)
-                        except Exception as e:
-                            print(f"[ERR]  TTS vision: {e}", flush=True)
+                        _speak_simple(reply, len(reply), ROUTE_UTILITY, "vision",
+                                      teensy, leds, pa, mic, _bench_stages, _t_mono_wake,
+                                      _bench_transcript, _gandalf_was_cold)
                         emit_emotion(teensy, leds, "NEUTRAL"); show_idle_for_mode(leds)
                         print("[INFO] Ready.", flush=True); continue
                 elif _result.response is not None:
                     print(f"[UTIL] {_result.action}: {_result.response}", flush=True)
-                    try:
-                        pcm_data = synthesize(_result.response)
-                        leds.show_speaking(); mic.stop_stream()
-                        _t_mono_play = time.monotonic()
-                        try: _bench_stages["play_start_ms"] = round((_t_mono_play - _t_mono_wake) * 1000)
-                        except Exception: pass
-                        play_pcm_speaking(pcm_data, pa, teensy); mic.start_stream()
-                        _bench_write(_bench_stages, _bench_transcript, len(_result.response), get_model(), _gandalf_was_cold, ROUTE_UTILITY, False)
-                    except Exception as e:
-                        print(f"[ERR]  TTS utility: {e}", flush=True)
+                    _speak_simple(_result.response, len(_result.response), ROUTE_UTILITY, "utility",
+                                  teensy, leds, pa, mic, _bench_stages, _t_mono_wake,
+                                  _bench_transcript, _gandalf_was_cold)
                     emit_emotion(teensy, leds, "NEUTRAL"); show_idle_for_mode(leds)
                     print("[INFO] Ready.", flush=True); continue
 
@@ -1625,16 +1764,9 @@ def main():
                 elif _result.action == "SLEEP":
                     _do_sleep(teensy, leds)
                     if _result.response:
-                        try:
-                            pcm_data = synthesize(_result.response)
-                            leds.show_speaking(); mic.stop_stream()
-                            _t_mono_play = time.monotonic()
-                            try: _bench_stages["play_start_ms"] = round((_t_mono_play - _t_mono_wake) * 1000)
-                            except Exception: pass
-                            play_pcm_speaking(pcm_data, pa, teensy); mic.start_stream()
-                            _bench_write(_bench_stages, _bench_transcript, 0, get_model(), _gandalf_was_cold, ROUTE_AMBIGUOUS, False)
-                        except Exception as e:
-                            print(f"[ERR]  TTS ambiguous sleep: {e}", flush=True)
+                        _speak_simple(_result.response, 0, ROUTE_AMBIGUOUS, "ambiguous sleep",
+                                      teensy, leds, pa, mic, _bench_stages, _t_mono_wake,
+                                      _bench_transcript, _gandalf_was_cold)
                     show_idle_for_mode(leds); print("[INFO] Ready.", flush=True); continue
                 # AMBIGUOUS/LLM falls through to LLM below
 
@@ -1650,7 +1782,11 @@ def main():
                 reply, _current_emotion, _interrupted, _ok = _play_camera_game(
                     _cam_game, text, teensy, leds, pa, mic, _bench_stages, _t_mono_wake)
                 if not _ok:
-                    leds.show_error(); time.sleep(1)
+                    leds.show_error()
+                    # S194 Rung6 (MAD): a camera-game turn that produced no audio
+                    # shouldn't go silent either -- same TTS_FAIL/LLM_DOWN signature.
+                    if not speak_error("TTS_FAIL" if (reply or "").strip() else "LLM_DOWN"):
+                        time.sleep(1)
                     show_idle_for_mode(leds); continue
                 _bench_write(_bench_stages, _bench_transcript, len(reply), get_model(), _gandalf_was_cold, ROUTE_UTILITY, _interrupted, emotion=_current_emotion)
                 _last_known_emotion = _current_emotion
@@ -1664,7 +1800,13 @@ def main():
                     text, _num_predict, teensy, leds, pa, mic,
                     _bench_stages, _t_mono_wake, gandalf_was_cold=_gandalf_was_cold)
                 if not _ok:
-                    leds.show_error(); time.sleep(1)
+                    leds.show_error()
+                    # S194 Rung6: never silent. F1 signature: non-empty reply means
+                    # the LLM spoke but every TTS engine failed (TTS_FAIL); empty
+                    # reply means the stream itself died (LLM_DOWN). Fall back to the
+                    # 1s error-LED hold only when no clip is available.
+                    if not speak_error("TTS_FAIL" if (reply or "").strip() else "LLM_DOWN"):
+                        time.sleep(1)
                     show_idle_for_mode(leds); continue
                 _bench_write(_bench_stages, _bench_transcript, len(reply), get_model(), _gandalf_was_cold, _bench_route, _interrupted, emotion=_current_emotion)
                 _last_known_emotion = _current_emotion
@@ -1696,7 +1838,8 @@ def main():
                 # Break 5 (S168): no double-beep between game exchanges (the clue
                 # already invites the guess); keep it for normal follow-ups.
                 followup_audio = record_followup(mic, pa, leds,
-                                                 play_beep=not _cam_game_state["active"])
+                                                 play_beep=not _cam_game_state["active"],
+                                                 asked_question=reply.strip().endswith('?'))
                 if followup_audio is None: print("[FLWP] No response", flush=True); break
                 rms = np.sqrt(np.mean(np.frombuffer(followup_audio, dtype=np.int16).astype(np.float32)**2))
                 if rms < 100: print("[FLWP] Silent", flush=True); break
@@ -1712,17 +1855,19 @@ def main():
                 print(f"[STT]  '{text}'", flush=True)
                 _text_norm = text.lower().strip().strip(".!?,;:")
                 # Gate: known Whisper hallucinations (brief phrases Whisper hallucinates when silent)
-                if _text_norm in _WHISPER_HALLUCINATIONS:
+                if _text_norm in WHISPER_HALLUCINATIONS:
                     print(f"[FLWP] Hallucination filtered: '{text}'", flush=True); break
-                # Gate: URL/spam hallucination patterns
-                if any(p in _text_norm for p in ("www.", ".gov", ".com", ".org",
-                       "for more information", "subscribe", "don't forget")):
+                # Gate: URL/spam hallucination patterns (shared with the main-loop
+                # gate's WHISPER_HALLUCINATION_PATTERNS via core.speech_gates --
+                # S191 audit AUD-1, was a separately drifting inline tuple here).
+                if any(p in _text_norm for p in WHISPER_HALLUCINATION_PATTERNS):
                     print(f"[FLWP] Hallucination filtered: '{text}'", flush=True); break
-                if any(_text_norm == phrase or _text_norm.startswith(phrase)
-                       for phrase in STOP_PHRASES):
+                # Word-boundary match (exact or phrase+space), same as the main-loop
+                # STOP gate ~line 1509 -- was a bare startswith() here, which let
+                # "stopwatch"/"cool as ice"/etc. falsely end the follow-up (S191 AUD-1).
+                if phrase_matches(_text_norm, STOP_PHRASES):
                     print("[STOP] Stop in follow-up", flush=True); break
-                if any(_text_norm == phrase or _text_norm.startswith(phrase)
-                       for phrase in FOLLOWUP_DISMISSALS):
+                if phrase_matches(_text_norm, FOLLOWUP_DISMISSALS):
                     print("[FLWP] Polite dismissal, ending follow-up", flush=True); break
                 time_reply = handle_time_command(text)
                 vol_reply  = handle_volume_command(text) if time_reply is None else None

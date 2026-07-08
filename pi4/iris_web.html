@@ -261,6 +261,34 @@
       <p class="hint" style="margin-top:6px">Enables BREATHE / BLINK / TWITCH / BOING. Silly (9) auto-starts and wags tongue after 2 s. Requires S87 firmware flashed.</p>
     </div>
   </div>
+
+  <!-- TFT Mouth Intensity (mirror of the Sleep tab — same three settings, kept here so mouth brightness is adjustable from the Face tab) -->
+  <div class="card">
+    <h2>TFT Mouth Intensity</h2>
+    <p class="hint">ILI9341 backlight PWM, level 0–15 (logarithmic). Same three settings as the Sleep tab — edits here and there stay in sync. "Apply Now" persists all three and immediately pushes the level matching the current state (idle when awake, else sleep). Raise Awake / Idle if the mouth looks too dim.</p>
+    <div class="field-row">
+      <label>Awake intensity (0–15)</label>
+      <input type="range" id="MOUTH_INTENSITY_AWAKE_F" min="0" max="15" step="1" value="8"
+             style="width:180px;accent-color:#a78bfa;height:6px;cursor:pointer"
+             oninput="document.getElementById('mouth-awake-display-f').textContent=this.value">
+      <span id="mouth-awake-display-f" style="width:24px;color:var(--text);font-size:13px;flex-shrink:0">8</span>
+    </div>
+    <div class="field-row">
+      <label>Idle intensity (0–15)</label>
+      <input type="range" id="MOUTH_INTENSITY_IDLE_F" min="0" max="15" step="1" value="8"
+             style="width:180px;accent-color:#34d399;height:6px;cursor:pointer"
+             oninput="document.getElementById('mouth-idle-display-f').textContent=this.value">
+      <span id="mouth-idle-display-f" style="width:24px;color:var(--text);font-size:13px;flex-shrink:0">8</span>
+    </div>
+    <div class="field-row">
+      <label>Sleep intensity (0–15)</label>
+      <input type="range" id="MOUTH_INTENSITY_SLEEP_F" min="0" max="15" step="1" value="1"
+             style="width:180px;accent-color:var(--indigo);height:6px;cursor:pointer"
+             oninput="document.getElementById('mouth-sleep-display-f').textContent=this.value">
+      <span id="mouth-sleep-display-f" style="width:24px;color:var(--text);font-size:13px;flex-shrink:0">1</span>
+    </div>
+    <button class="btn btn-primary" onclick="saveMouthIntensity('_F')">Save &amp; Apply Now</button>
+  </div>
 </div>
 
 <!-- SLEEP -->
@@ -420,6 +448,7 @@
     <div class="field-row"><label>Sleep state</label><span id="sys-sleep" style="color:var(--muted)">--</span></div>
     <div class="field-row"><label>CPU temp</label><span id="sys-temp">--</span></div>
     <div class="field-row"><label>Uptime</label><span id="sys-uptime">--</span></div>
+    <div class="field-row"><label>Assistant loop</label><span id="sys-heartbeat" style="color:var(--muted)">--</span></div>
     <div style="margin-top:12px;display:flex;gap:8px">
       <button class="btn btn-primary" onclick="restartAssistant()">Restart IRIS Assistant</button>
       <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="pollStatus()">Refresh Status</button>
@@ -444,56 +473,6 @@
     </div>
     <div style="margin-top:12px">
       <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="pollSysstat()">Refresh Now</button>
-    </div>
-  </div>
-
-  <!-- OGLE Vision (RD-033) — status of the standalone face-tracking camera -->
-  <div class="card">
-    <h2>OGLE Vision <span id="ogle-dot" style="font-size:12px;color:var(--muted)">&#9679; checking</span></h2>
-    <p class="hint" style="margin-bottom:12px">Standalone ESP32-S3 face-tracker (replaces the dead Person Sensor, RD-033). Proxied via <code style="color:var(--blue)">/api/ogle</code> from <code style="color:var(--blue)">192.168.1.202</code> — computed on request, never logged. Gaze data still flows over USB-CDC; this is the management plane. Auto-refresh ~10 s.</p>
-
-    <!-- live tracking visualizer: face center as a dot + fading trail in 240x240 frame -->
-    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-      <div>
-        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Tracking (240&times;240 frame)</div>
-        <canvas id="ogle-track" width="180" height="180" style="width:180px;height:180px;background:var(--input-bg);border:1px solid var(--border);border-radius:4px"></canvas>
-        <div id="ogle-gaze" style="font-size:11px;margin-top:4px;color:var(--muted)">gaze: &mdash;</div>
-      </div>
-      <div style="flex:1;min-width:200px">
-        <div class="field-row"><label>Tracking</label><span id="ogle-present" style="color:var(--muted)">--</span></div>
-        <div class="field-row"><label>Confidence</label><span id="ogle-conf" style="color:var(--muted)">--</span></div>
-        <div class="field-row"><label>Size (proximity)</label><span id="ogle-size" style="color:var(--muted)">--</span></div>
-        <div class="field-row"><label>Facing</label><span id="ogle-facing" style="color:var(--muted)">--</span></div>
-        <div class="field-row"><label>Faces in frame</label><span id="ogle-count" style="color:var(--muted)">--</span></div>
-        <div class="field-row"><label>Last face age</label><span id="ogle-age" style="color:var(--muted)">--</span></div>
-        <div class="field-row"><label>FPS</label><span id="ogle-fps" style="color:var(--muted)">--</span></div>
-        <div class="field-row"><label>WiFi RSSI</label><span id="ogle-rssi" style="color:var(--muted)">--</span></div>
-        <div class="field-row"><label>Firmware / uptime</label><span id="ogle-fw" style="color:var(--muted)">--</span></div>
-      </div>
-    </div>
-    <div style="margin-top:8px">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">FPS trend</div>
-      <canvas id="ogle-spark" width="320" height="36" style="width:100%;max-width:340px;height:36px;background:var(--input-bg);border:1px solid var(--border);border-radius:4px"></canvas>
-    </div>
-
-    <!-- runtime tuning: live, persisted to OGLE NVS, no reflash -->
-    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
-      <div style="font-size:12px;color:var(--text);margin-bottom:8px">Live tuning <span class="hint">(applied on the node + persisted to NVS — no reflash)</span></div>
-      <div class="field-row"><label>Confidence <span id="ogle-conf-val" style="color:var(--blue)">0.50</span></label>
-        <input type="range" id="ogle-conf-slider" min="0.10" max="1.00" step="0.05" value="0.50" oninput="document.getElementById('ogle-conf-val').textContent=(+this.value).toFixed(2)"></div>
-      <div class="field-row"><label>Facing threshold <span id="ogle-facing-val" style="color:var(--blue)">0.38</span></label>
-        <input type="range" id="ogle-facing-slider" min="0.00" max="1.00" step="0.02" value="0.38" oninput="document.getElementById('ogle-facing-val').textContent=(+this.value).toFixed(2)"></div>
-      <div class="field-row"><label>Detection mode</label>
-        <select id="ogle-mode-select" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px">
-          <option value="accurate">accurate (landmarks, ~80ms)</option>
-          <option value="fast">fast (bbox only, ~50ms)</option>
-        </select></div>
-      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-primary btn-sm" onclick="applyOgleConfig()">Apply Tuning</button>
-        <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="pollOgle()">Refresh Now</button>
-        <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--red);color:var(--red)" onclick="rebootOgle()">Reboot Node</button>
-      </div>
-      <div id="ogle-msg" style="font-size:11px;margin-top:6px;color:var(--muted)"></div>
     </div>
   </div>
 
@@ -709,7 +688,7 @@
   </div>
 </div>
 
-<!-- VISION CAL (OGLE calibration tab) -->
+<!-- VISION CAL (Person Sensor calibration tab) -->
 <div class="section" id="sec-ogle_cal">
 
   <!-- Person Sensor live status (T4.1 eye-tracking sensor health/activity) -->
@@ -739,12 +718,13 @@
     <div class="field-row">
       <label>Eyes sensor LED (Teensy 4.1)</label>
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="ps-led-eyes" onchange="setEyesLed(this.checked)"> light on</label>
+      <span id="ps-led-eyes-ack" class="hint" style="font-size:11px">—</span>
     </div>
     <div class="field-row">
       <label>Servo / base sensor LED (Teensy 4.0)</label>
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="ps-led-servo" onchange="setServoLed(this.checked)"> light on</label>
     </div>
-    <p class="hint" id="ps-led-note" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">Requires the <b>S150d</b> firmware on each Teensy (REPO-ONLY until flashed). After flashing, toggle on: if the LED does not light, that sensor is not reachable on its I2C bus (power/wiring), not merely flaky.</p>
+    <p class="hint" id="ps-led-note" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">Both LEDs ship disabled in firmware; toggling here is live and persisted to SD. The eyes (T4.1) row shows the Teensy's own acknowledgement of the last value it actually received — if that confirmation is missing or stale after a toggle, the write didn't reach the Teensy (check the serial link); if it's present but the physical LED still doesn't respond, the sensor itself isn't reachable on its I2C bus.</p>
   </div>
 
   <!-- Person Sensor Config (T4.1 Person Sensor — live PS_CFG serial, S141) -->
@@ -759,83 +739,6 @@
       <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="persistPsConfig()">Persist to SD</button>
     </div>
     <div id="ps-cfg-msg" style="font-size:11px;margin-top:6px;color:var(--muted)"></div>
-  </div>
-
-  <!-- Live signal strip -->
-  <div class="card">
-    <h2>Vision Cal <span id="oglecal-sig" style="font-size:12px;color:var(--muted)">&#9679; checking</span></h2>
-    <p class="hint" style="margin-bottom:10px">Calibration companion for the OGLE face-tracking node. Node config is persisted to ESP32 NVS (no reflash). Bridge config rewrites the systemd service file and restarts ogle-bridge.</p>
-    <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
-      <span style="font-size:13px">Signal: <strong id="oglecal-present" style="color:var(--muted)">--</strong></span>
-      <span style="font-size:13px;color:var(--muted)">Conf: <span id="oglecal-conf">--</span></span>
-      <span style="font-size:13px;color:var(--muted)">Last face: <span id="oglecal-age">--</span></span>
-      <span style="font-size:13px;color:var(--muted)">FPS: <span id="oglecal-fps">--</span></span>
-      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="pollOgle()">Refresh</button>
-    </div>
-  </div>
-
-  <!-- Two-column: node config + bridge config -->
-  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-
-    <!-- Node-side (OGLE ESP32 /config — persists to NVS, no reflash) -->
-    <div class="card" style="flex:1;min-width:260px">
-      <h2>Node Config <span class="hint" style="font-size:11px">(ESP32 NVS)</span></h2>
-      <p class="hint" style="margin-bottom:10px">Applied live to the ESP32 and persisted to NVS. No firmware reflash needed.</p>
-      <div class="field-row">
-        <label>Confidence <span id="oc-conf-v" style="color:var(--blue)">0.50</span></label>
-        <input type="range" id="oc-conf" min="0.10" max="1.00" step="0.05" value="0.50"
-               style="flex:1;accent-color:var(--blue);height:6px;cursor:pointer"
-               oninput="document.getElementById('oc-conf-v').textContent=(+this.value).toFixed(2)">
-      </div>
-      <div class="field-row">
-        <label>Facing threshold <span id="oc-facing-v" style="color:var(--blue)">0.38</span></label>
-        <input type="range" id="oc-facing" min="0.00" max="1.00" step="0.02" value="0.38"
-               style="flex:1;accent-color:var(--blue);height:6px;cursor:pointer"
-               oninput="document.getElementById('oc-facing-v').textContent=(+this.value).toFixed(2)">
-      </div>
-      <div class="field-row">
-        <label>Detection mode</label>
-        <select id="oc-mode" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px">
-          <option value="accurate">accurate (~80ms)</option>
-          <option value="fast">fast (~50ms)</option>
-        </select>
-      </div>
-      <div style="margin-top:12px;display:flex;gap:8px">
-        <button class="btn btn-primary btn-sm" onclick="applyOgleNodeCfg()">Apply Node Config</button>
-        <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="rebootOgle()">Reboot Node</button>
-      </div>
-      <div id="oglecal-node-msg" style="font-size:11px;margin-top:6px;color:var(--muted)"></div>
-    </div>
-
-    <!-- Bridge-side (ogle_bridge.py env vars in ogle-bridge.service) -->
-    <div class="card" style="flex:1;min-width:260px">
-      <h2>Bridge Config <span class="hint" style="font-size:11px">(ogle_bridge.py env)</span></h2>
-      <p class="hint" style="margin-bottom:10px">Rewrites the systemd service file and restarts ogle-bridge. Use "Persist to SD" after saving to survive reboot.</p>
-      <div id="ogle-bridge-fields"></div>
-      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-primary" onclick="saveOgleBridge()">Save &amp; Restart Bridge</button>
-        <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="loadOgleBridge()">Reload</button>
-        <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="resetOgleBridgeDefaults()">Reset to Defaults</button>
-      </div>
-      <div id="oglecal-bridge-msg" style="font-size:11px;margin-top:6px;color:var(--muted)"></div>
-    </div>
-  </div>
-
-  <!-- SD persistence -->
-  <div class="card">
-    <h2>SD Persistence</h2>
-    <p class="hint" style="margin-bottom:10px">Writes ogle-bridge.service to <code style="color:var(--blue)">/media/root-ro/etc/systemd/system/</code> via overlayfs dual-write. Must do this after each "Save &amp; Restart Bridge" or changes are lost on reboot.</p>
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <button class="btn btn-primary" onclick="persistOgleBridge()">Persist Bridge Config to SD</button>
-      <span id="oglecal-persist-msg" style="font-size:12px;color:var(--muted)"></span>
-    </div>
-  </div>
-
-  <!-- Calibration wizard -->
-  <div class="card">
-    <h2>Calibration Wizard</h2>
-    <p class="hint" style="margin-bottom:12px">Step-by-step checklist. Check off each item as you complete it. No state is saved — these are procedure reminders only. Work top-to-bottom.</p>
-    <div id="ogle-wizard"></div>
   </div>
 
 </div>

@@ -7,13 +7,19 @@
 
 **Most home assistants are a microphone with a personality bolted on. IRIS is the other way around.** It's a physical robot face — gaze-tracking eyes that follow you across the room, a mouth and LEDs that shift with its mood, a voice that trades quips with adults and plays "guess my face" with kids — and it runs **100% on hardware you own, with zero cloud AI, zero speech APIs, and zero telemetry.**
 
+![Tour of the IRIS WebUI: eyes, voice, latency bench, gestures, sleep](docs/media/iris_webui_tour.gif)
+
+<!-- WALKTHROUGH VIDEO: once the YouTube upload exists, replace this comment with:
+[![Self-narrated walkthrough — IRIS explains her own control panel](docs/media/video_thumb.jpg)](VIDEO_URL)
+-->
+
 ![Architecture: Pi 4 orchestrator, GandalfAI inference, twin Teensy display + base controllers](docs/media/architecture.png)
 
 IRIS is a personality-first AI robot. The core design goal is genuine character, emotional congruence, and a face that means what it says — voice, eyes, mouth, and LED lighting all changing simultaneously, in real time, based on conversational content. All technical architecture serves this goal.
 
 IRIS borrows from interpersonal neurobiology — the science of how people attune to each other through affective attunement, paraverbal signal, timing, and congruent affect — and treats it as an engineering spec rather than a metaphor. The aim is the uncanny-in-a-good-way feeling of being talked *to*, not at: a robot with enough character to trade quips with an adult and play I Spy or "guess my face" with a kid. The personality is defined by what IRIS *is*, not by what it must avoid — which keeps the model's anthropomorphic expression wide open.
 
-After 168 documented build sessions, everything runs locally on owned hardware: zero cloud AI dependencies, zero external speech APIs, zero telemetry.
+After 190+ documented build sessions, everything runs locally on owned hardware: zero cloud AI dependencies, zero external speech APIs, zero telemetry.
 
 ### Signature integrations
 
@@ -53,6 +59,10 @@ The full story, including the retraining plan for under-served children's voices
 ## Operate, Diagnose, Tune
 
 The design thesis of the IRIS WebUI: **the system must be diagnosable and tunable by any operator — human or AI agent — from its own UI and logs, without reading source code.** Every latency stage is measured and charted, every sensor has a liveness check, every behavior knob is a live-applied config value rather than a code constant, and destructive paths have an undo. None of this is IRIS-specific; these are patterns worth stealing for any hardware/AI project.
+
+![The Face tab — seven eye styles, nine emotions, live emotion-display mapping](docs/media/webui_eyes.png)
+
+![The Bench tab — per-stage turn latency, wake word to first spoken word](docs/media/webui_bench.png)
 
 The WebUI ([pi4/iris_web.html](pi4/iris_web.html) + [iris_web.js](pi4/iris_web.js), served by [iris_web.py](pi4/iris_web.py)) has fifteen tabs:
 
@@ -102,7 +112,7 @@ Both trees compile clean as shipped — verified with PlatformIO 6.1.19 (Teensy 
 
 `pi4/` is the actual production Python — `assistant.py`, `services/`, `core/`, `hardware/`, the WebUI — read this for the real architecture and pipeline logic. What's *not* included, because it doesn't exist as a generic artifact in the private repo either:
 
-- **No systemd unit files for the core services.** Live IRIS runs `assistant.service` and `iris-web.service`, but those are hand-authored on the deployed Pi, not tracked as portable templates in the repo. (The one `.service` file that does ship, [pi4/scripts/ogle-bridge.service](pi4/scripts/ogle-bridge.service), belongs to a retired, out-of-scope face-tracking node — not a template for the core pipeline.)
+- **No systemd unit files.** Live IRIS runs `assistant.service` and `iris-web.service`, but those are hand-authored on the deployed Pi, not tracked as portable templates in the repo.
 - **No `iris_config.json`.** Runtime config (LED brightness, TTS voice, sensor thresholds, etc.) is authored fresh per-deployment; there's no shipped default to copy.
 - **[pi4/requirements.txt](pi4/requirements.txt)** — provided, but *inferred mechanically* from the actual `import` statements in `pi4/**/*.py` (AST-parsed, third-party only), not hand-verified as a clean `pip install -r requirements.txt` on fresh hardware. Some of these (`RPi.GPIO`, `smbus2`, `spidev`) are more commonly installed via `apt` on Raspberry Pi OS than pip.
 
@@ -120,7 +130,7 @@ I built IRIS as the orchestrator of a fleet of AI agents, and the process is as 
 6. **Human validation** — I verify behavior on the physical robot. An AI cannot check whether the eyes actually track or the voice actually sounds right; those gates are not delegable.
 7. **Session close** — changelog, machine-state snapshot, handoff notes, commit. The docs are the continuity layer that lets the next session's agent pick up cold.
 
-The adversarial step has caught false hardware-state assumptions, serial-protocol ownership errors, and scope creep repeatedly across 168 sessions. Final authority always belongs to the human operator — the AIs plan, implement, and verify at the code level; I own physical reality. Deployed-file md5 hashes recorded at every close make "what is actually running right now" unambiguous across sessions and across agents.
+The adversarial step has caught false hardware-state assumptions, serial-protocol ownership errors, and scope creep repeatedly across 190+ sessions. Final authority always belongs to the human operator — the AIs plan, implement, and verify at the code level; I own physical reality. Deployed-file md5 hashes recorded at every close make "what is actually running right now" unambiguous across sessions and across agents.
 
 ## License & attribution
 

@@ -1,0 +1,7 @@
+# /etc/cron.d/iris-drift-check
+# Deploy to Pi4: sudo cp iris-drift-check.cron /etc/cron.d/iris-drift-check
+# S192d (RD-038 audit AUD-3). Daily RAM-vs-SD drift report, read-only
+# (drift_check.sh never remounts /media/root-ro or writes outside /home/pi/logs/).
+# Repo-vs-Pi comparison (the fuller 3-way check) is a separate manual step --
+# run scripts/drift_report.ps1 from SuperMaster when you want that.
+0 4 * * * pi /bin/bash /home/pi/scripts/drift_check.sh >/dev/null 2>&1

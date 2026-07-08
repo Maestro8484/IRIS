@@ -1,10 +1,17 @@
 // mouth_tft.cpp — ILI9341 2.8" TFT mouth driver (Arduino_GFX SWSPI, Teensy 4.1)
 // Bit-bang SPI on pins 35/37/36 — no hardware SPI, no DMA, no collision with GC9A01A_t3n.
 // Pins: MOSI=35, SCK=37, CS=36, DC=8, RST=4, BL=5
+//
+// S186: expressions are now pre-rendered, shaded RGB565 sprites baked in flash
+// (mouth_sprites.h, uniform yellow lips). The Teensy just blits pixels — the old
+// procedural fat-marker draws are gone. Dirty-rect clears keep each blit cheap so
+// the eye loop + Person Sensor keep their time. The animated sleep screen and the
+// idle-animation engine are unchanged (sleep is still drawn procedurally).
 
 #include "mouth_tft.h"
 #include "sleep_cfg.h"
 #include <Arduino_GFX_Library.h>
+#include "mouth_sprites.h"   // baked RGB565 mouth sprites (yellow lips)
 
 static constexpr uint8_t MOUTH_TFT_CS   = 36;
 static constexpr uint8_t MOUTH_TFT_DC   =  8;
@@ -13,18 +20,8 @@ static constexpr uint8_t MOUTH_TFT_MOSI = 35;
 static constexpr uint8_t MOUTH_TFT_SCK  = 37;
 static constexpr uint8_t MOUTH_TFT_BL   =  5;  // GPIO5 — PWM dimming, wired to ILI9341 BL
 
-// ── Colors (RGB565) matching assistant.py emotion palette ────────────────────
-static constexpr uint16_t MTFT_BLACK   = 0x0000;
-static constexpr uint16_t MTFT_CYAN    = 0x07FF;  // NEUTRAL, CURIOUS
-static constexpr uint16_t MTFT_YELLOW  = 0xFFE0;  // HAPPY
-static constexpr uint16_t MTFT_RED     = 0xF800;  // ANGRY
-static constexpr uint16_t MTFT_PURPLE  = 0x780F;  // SLEEPY
-static constexpr uint16_t MTFT_WHITE   = 0xFFFF;  // SURPRISED
-static constexpr uint16_t MTFT_BLUE    = 0x001F;  // SAD
-static constexpr uint16_t MTFT_MAGENTA = 0xF81F;  // CONFUSED
-static constexpr uint16_t MTFT_BLUSH   = 0xFBCC;  // HAPPY cheek blush (light pink)
-static constexpr uint16_t MTFT_AMBER   = 0xFD20;  // AMUSED — reserved, needs dedicated expression index
-static constexpr uint16_t MTFT_TONGUE  = 0xFB36;  // hot pink — SILLY tongue
+// Only black is still referenced directly; every mouth is a baked sprite now.
+static constexpr uint16_t MTFT_BLACK = 0x0000;
 
 // ── Backlight lookup table (logarithmic, level 0-15 → PWM 0-255) ─────────────
 // intensity 0=off, 1=barely visible, 8=comfortable idle, 15=full
@@ -37,150 +34,28 @@ static uint8_t  _currentBLLevel  = 14; // matches init (BL_MAP[14]=210)
 static uint8_t  _currentMouthIdx = 0;
 static uint32_t _sillyShownMs    = 0;  // millis() when idx 9 shown; arms TONGUE_WAG
 
-// ── Emotion-tinted idle (RD-030 #2) ──────────────────────────────────────────
-// The last clearly-coloured mood IRIS expressed, captured in mouthTFTShow().
-// The idle resting face is redrawn in this hue, decaying back to cyan over
-// IDLE_TINT_DECAY_MS, so IRIS idles "warm" after a happy chat, "cool" after a sad one.
-static uint16_t _lastEmotionColor = 0x07FF;       // start neutral cyan
-static uint32_t _lastEmotionMs    = 0;            // 0 = never → no tint
-static constexpr uint32_t IDLE_TINT_DECAY_MS = 240000UL; // 4 min to fade to cyan
-
 static Arduino_DataBus *_bus = nullptr;
 static Arduino_GFX     *_tft = nullptr;
 
-// ── Draw primitives ───────────────────────────────────────────────────────────
-
-// Thick arc: center (cx,cy), radius r, angles a0..a1 radians.
-// Screen-coord angles: 0=right, PI/2=down, PI=left, 3PI/2=up.
-// Stroke via fillRect at each parametric step (~1px apart).
-static void _arc(int16_t cx, int16_t cy, int16_t r,
-                 float a0, float a1, uint16_t color, int16_t t) {
-    float step = (r > 0) ? (1.0f / r) : 0.02f;
-    for (float a = a0; a <= a1; a += step) {
-        int16_t x = cx + (int16_t)(r * cosf(a));
-        int16_t y = cy + (int16_t)(r * sinf(a));
-        _tft->fillRect(x - t / 2, y - t / 2, t, t, color);
-    }
+// ── Sprite blit ───────────────────────────────────────────────────────────────
+// Copy a baked RGB565 sprite (from flash) to the panel at its stored origin.
+static void _blitSprite(const MouthSprite &s) {
+    if (!s.data || s.w <= 0 || s.h <= 0) return;
+    _tft->draw16bitRGBBitmap(s.x, s.y, (uint16_t *)s.data, s.w, s.h);
 }
 
-// Thick quadratic bezier from P0→control→P2
-static void _bezier(int16_t x0, int16_t y0, int16_t xc, int16_t yc,
-                    int16_t x2, int16_t y2, uint16_t color, int16_t t) {
-    for (float f = 0.0f; f <= 1.0f; f += 0.004f) {
-        float m = 1.0f - f;
-        int16_t x = (int16_t)(m * m * x0 + 2.0f * m * f * xc + f * f * x2);
-        int16_t y = (int16_t)(m * m * y0 + 2.0f * m * f * yc + f * f * y2);
-        _tft->fillRect(x - t / 2, y - t / 2, t, t, color);
-    }
-}
-
-// Thick sine wave with optional linear downward drift
-static void _sine(int16_t x0, int16_t x1, int16_t cy,
-                  float amp, float freq, float drift_per_px,
-                  uint16_t color, int16_t t) {
-    for (int16_t x = x0; x <= x1; x++) {
-        float dx  = (float)(x - x0);
-        int16_t y = (int16_t)(cy + dx * drift_per_px + amp * sinf(freq * dx));
-        _tft->fillRect(x - t / 2, y - t / 2, t, t, color);
-    }
-}
-
-// Draw a single 'Z' character as three line segments (for SLEEPY ZZZ)
+// Draw a single 'Z' character as three line segments (for the SLEEP animation)
 // top-left corner (tx, ty), width w, height h
 static void _draw_Z(int16_t tx, int16_t ty, int16_t w, int16_t h, uint16_t color) {
     int16_t t = 4;  // stroke width
-    // top horizontal
-    _tft->fillRect(tx, ty, w, t, color);
-    // diagonal (approximate with a bezier/line scan)
+    _tft->fillRect(tx, ty, w, t, color);                 // top horizontal
     int16_t steps = w + h;
-    for (int16_t i = 0; i <= steps; i++) {
+    for (int16_t i = 0; i <= steps; i++) {               // diagonal
         int16_t x = tx + w - (int16_t)((float)i / steps * w);
         int16_t y = ty + (int16_t)((float)i / steps * h);
         _tft->fillRect(x - t / 2, y - t / 2, t, t, color);
     }
-    // bottom horizontal
-    _tft->fillRect(tx, ty + h - t, w, t, color);
-}
-
-// ── Expression draw functions ─────────────────────────────────────────────────
-
-// 0: NEUTRAL — very shallow upward curve (near-flat), cyan
-static void _draw_neutral() {
-    _arc(160, -600, 730, 1.35f, 1.79f, MTFT_CYAN, 10);
-}
-
-// 1: HAPPY — large smile arc + cheek blush circles, yellow/pink
-static void _draw_happy() {
-    _arc(160, 20, 130, 0.50f, 2.64f, MTFT_YELLOW, 12);
-    _tft->fillCircle(60,  155, 22, MTFT_BLUSH);
-    _tft->fillCircle(260, 155, 22, MTFT_BLUSH);
-}
-
-// 2: CURIOUS — asymmetric smirk (flat left, rises right), cyan
-static void _draw_curious() {
-    _bezier(40, 135, 160, 145, 285, 95, MTFT_CYAN, 10);
-}
-
-// 3: ANGRY — downward frown arc, red
-static void _draw_angry() {
-    _arc(160, 220, 120, 3.77f, 5.65f, MTFT_RED, 12);
-}
-
-// 4: SLEEPY — drooping sine wave with downward drift + ZZZ glyphs, purple
-static void _draw_sleepy() {
-    _sine(30, 290, 105, 18.0f, 0.030f, 0.10f, MTFT_PURPLE, 10);
-    _draw_Z(200, 20, 24, 20, MTFT_PURPLE);  // large Z
-    _draw_Z(228, 30, 18, 15, MTFT_PURPLE);  // medium Z
-    _draw_Z(250, 38, 14, 11, MTFT_PURPLE);  // small Z
-}
-
-// 5: SURPRISED — thick hollow oval, white
-static void _draw_surprised() {
-    const int16_t cx = 160, cy = 120, rx = 58, ry = 48, t = 12;
-    for (float a = 0.0f; a < 6.2832f; a += 0.020f) {
-        int16_t x = cx + (int16_t)(rx * cosf(a));
-        int16_t y = cy + (int16_t)(ry * sinf(a));
-        _tft->fillRect(x - t / 2, y - t / 2, t, t, MTFT_WHITE);
-    }
-}
-
-// 6: SAD — deep frown arc + vertical quiver lines, blue
-static void _draw_sad() {
-    _arc(160, 200, 145, 3.87f, 5.55f, MTFT_BLUE, 12);
-    for (int8_t i = 0; i < 5; i++) {
-        int16_t x = 120 + i * 20;
-        _tft->drawFastVLine(x,     148, 18, MTFT_BLUE);
-        _tft->drawFastVLine(x + 2, 151, 13, MTFT_BLUE);
-    }
-}
-
-// 7: CONFUSED — squiggly multi-period sine wave (~2.7 cycles), magenta
-static void _draw_confused() {
-    _sine(30, 290, 120, 28.0f, 0.065f, 0.0f, MTFT_MAGENTA, 10);
-}
-
-// 8: SLEEP/OFF — black screen only (cleared by mouthTFTShow before switch)
-static void _draw_sleep() {}
-
-// TONGUE_WAG helper: same layout as _draw_silly() but tongue body raised 15px
-static void _draw_silly_retracted() {
-    _arc(160, -10, 170, 0.52f, 2.62f, MTFT_YELLOW, 12);  // upper lip
-    _tft->fillRect(50, 100, 220, 75, 0x3000);               // dark interior
-    _tft->fillRect(105, 163, 110, 53, MTFT_TONGUE);          // tongue body (raised 15px)
-    _tft->fillCircle(160, 216, 42, MTFT_TONGUE);             // tongue tip
-    _arc(160, 115, 55, 0.45f, 2.69f, MTFT_YELLOW, 12);     // lower lip over tongue
-    _tft->fillRect(157, 167, 6, 47, 0xC000);                 // groove
-}
-
-// 9: SILLY — open mouth + protruding flat tongue, yellow/hot-pink
-// Draw order: upper lip → interior → tongue → lower lip on top → groove
-static void _draw_silly() {
-    _arc(160, -10, 170, 0.52f, 2.62f, MTFT_YELLOW, 12);  // upper lip
-    _tft->fillRect(50, 100, 220, 75, 0x3000);               // dark interior
-    _tft->fillRect(105, 148, 110, 68, MTFT_TONGUE);          // tongue body
-    _tft->fillCircle(160, 216, 42, MTFT_TONGUE);             // tongue tip
-    _arc(160, 115, 55, 0.45f, 2.69f, MTFT_YELLOW, 12);     // lower lip over tongue
-    _tft->fillRect(157, 152, 6, 62, 0xC000);                 // groove
+    _tft->fillRect(tx, ty + h - t, w, t, color);         // bottom horizontal
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -195,6 +70,42 @@ void mouthTFTInit() {
     analogWrite(MOUTH_TFT_BL, BL_MAP[14]); // level 14 = 210/255
 }
 
+// ── Dirty-rectangle redraw (PROBLEM #3) ──────────────────────────────────────
+// Each sprite has a tight bounding box. Instead of clearing the whole 320×240
+// panel before every mouth change (~100ms blocking bit-bang), we clear only the
+// union of the previous sprite's box and the new one, then blit the new sprite.
+// The frequent NEUTRAL redraw shrinks from a full-screen wipe to a ~183×41 band,
+// so the main loop keeps servicing serial + eye tracking + Person Sensor.
+struct MRect { int16_t x, y, w, h; };
+static const MRect FULL_BOX  = { 0, 0, 320, 240 };
+static MRect       _dirtyPrev = { 0, 0, 0, 0 };
+
+// Clear union(previous box, b), clamped to the panel, then remember b as the new
+// previous box. Callers that paint outside mouthTFTShow (sleep) set _dirtyPrev =
+// FULL_BOX so the next expression clears the whole panel.
+static void _clearUnion(const MRect &b) {
+    int16_t x0 = b.x, y0 = b.y, x1 = b.x + b.w, y1 = b.y + b.h;
+    if (_dirtyPrev.w > 0) {
+        if (_dirtyPrev.x < x0)                 x0 = _dirtyPrev.x;
+        if (_dirtyPrev.y < y0)                 y0 = _dirtyPrev.y;
+        if (_dirtyPrev.x + _dirtyPrev.w > x1)  x1 = _dirtyPrev.x + _dirtyPrev.w;
+        if (_dirtyPrev.y + _dirtyPrev.h > y1)  y1 = _dirtyPrev.y + _dirtyPrev.h;
+    }
+    if (x0 < 0)   x0 = 0;
+    if (y0 < 0)   y0 = 0;
+    if (x1 > 320) x1 = 320;
+    if (y1 > 240) y1 = 240;
+    if (x1 > x0 && y1 > y0) _tft->fillRect(x0, y0, x1 - x0, y1 - y0, MTFT_BLACK);
+    _dirtyPrev = b;
+}
+
+// Blit a sprite through the dirty-rect clear (used by mouthTFTShow + TONGUE_WAG).
+static void _showSprite(const MouthSprite &s) {
+    MRect b = { s.x, s.y, s.w, s.h };
+    _clearUnion(b);
+    _blitSprite(s);
+}
+
 void mouthTFTShow(uint8_t idx) {
     if (!_tft) return;
     if (idx > 9) idx = 0;
@@ -203,30 +114,12 @@ void mouthTFTShow(uint8_t idx) {
         _sillyShownMs = millis();
         mouthIdleStart();   // arm TONGUE_WAG — idle was stopped by MOUTH: handler; restart it
     }
-    _tft->fillScreen(MTFT_BLACK);
-    switch (idx) {
-        case 0: _draw_neutral();   break;
-        case 1: _draw_happy();     break;
-        case 2: _draw_curious();   break;
-        case 3: _draw_angry();     break;
-        case 4: _draw_sleepy();    break;
-        case 5: _draw_surprised(); break;
-        case 6: _draw_sad();       break;
-        case 7: _draw_confused();  break;
-        case 8: _draw_sleep();     break;
-        case 9: _draw_silly();     break;
+    if (idx == 8) {             // SLEEP/OFF — blank the whole panel
+        _tft->fillScreen(MTFT_BLACK);
+        _dirtyPrev = FULL_BOX;
+        return;
     }
-    // RD-030 #2: capture the last clearly-coloured mood for emotion-tinted idle.
-    // Neutral/curious (cyan), surprised (white), sleep are intentionally NOT captured
-    // so they don't wipe the prevailing mood hue at end-of-turn (Pi4 sends MOUTH:0).
-    switch (idx) {
-        case 1: case 9: _lastEmotionColor = MTFT_YELLOW;  _lastEmotionMs = millis(); break;
-        case 3:         _lastEmotionColor = MTFT_RED;     _lastEmotionMs = millis(); break;
-        case 4:         _lastEmotionColor = MTFT_PURPLE;  _lastEmotionMs = millis(); break;
-        case 6:         _lastEmotionColor = MTFT_BLUE;    _lastEmotionMs = millis(); break;
-        case 7:         _lastEmotionColor = MTFT_MAGENTA; _lastEmotionMs = millis(); break;
-        default: break;
-    }
+    _showSprite(MOUTH_SPR[idx]);
 }
 
 // Intensity / backlight control — BL on pin 5, PWM via BL_MAP lookup
@@ -248,33 +141,13 @@ void mouthSetIntensity(uint8_t level) {
     analogWrite(MOUTH_TFT_BL, BL_MAP[level]);
 }
 
-// ── Emotion-tinted idle resting face (RD-030 #2) ─────────────────────────────
-// Linear blend of two RGB565 colours; t=0 → a, t=255 → b.
-static uint16_t _blend565(uint16_t a, uint16_t b, uint8_t t) {
-    int ar = (a >> 11) & 0x1F, ag = (a >> 5) & 0x3F, ab = a & 0x1F;
-    int br = (b >> 11) & 0x1F, bg = (b >> 5) & 0x3F, bb = b & 0x1F;
-    int rr = ar + ((br - ar) * t) / 255;
-    int rg = ag + ((bg - ag) * t) / 255;
-    int rb = ab + ((bb - ab) * t) / 255;
-    return (uint16_t)((rr << 11) | (rg << 5) | rb);
-}
-
-// Redraw the neutral resting curve tinted toward the last mood, fading to cyan over
-// IDLE_TINT_DECAY_MS. One arc — as cheap as a normal MOUTH: render — so it is safe to
-// call on idle entry and between idle animations. Sets the resting expression to NEUTRAL.
+// ── Idle resting face ─────────────────────────────────────────────────────────
+// Kept for main.cpp's call site: settle the mouth to the NEUTRAL sprite on idle
+// entry. (The RD-030 #2 emotion-hue tint was removed in S186 — lips are now a
+// uniform baked colour, so there is nothing to recolour at runtime.)
 void mouthApplyIdleTint() {
     if (!_tft) return;
-    uint8_t t;  // 0 = full mood tint, 255 = full cyan
-    if (_lastEmotionMs == 0) {
-        t = 255;
-    } else {
-        uint32_t since = millis() - _lastEmotionMs;
-        t = (since >= IDLE_TINT_DECAY_MS) ? 255
-                                          : (uint8_t)((uint32_t)since * 255UL / IDLE_TINT_DECAY_MS);
-    }
-    uint16_t col = _blend565(_lastEmotionColor, MTFT_CYAN, t);
-    _tft->fillScreen(MTFT_BLACK);
-    _arc(160, -600, 730, 1.35f, 1.79f, col, 10); // same geometry as _draw_neutral()
+    _showSprite(MOUTH_SPR[0]);
     _currentMouthIdx = 0;
 }
 
@@ -291,6 +164,7 @@ void mouthSleepReset() {
     _sleepFrameCount = 0;
     _prevZY[0] = _prevZY[1] = _prevZY[2] = -999;
     _waveInit = false;  // trigger band clear + cache init on next frame
+    _dirtyPrev = FULL_BOX;  // sleep painted across the panel — force a full clear on the next expression
 }
 
 void mouthSleepFrame() {
@@ -452,8 +326,8 @@ static void _idleRestore(uint32_t nowMs) {
     _idlePhase = 0;
     analogWrite(MOUTH_TFT_BL, BL_MAP[_currentBLLevel]);
     if (restoreMouth && _tft) {
-        // RD-030 #2: return to the emotion-tinted resting face, not flat cyan, when the
-        // saved expression was NEUTRAL (the usual end-of-turn state).
+        // Return to the resting NEUTRAL face when the saved expression was NEUTRAL
+        // (the usual end-of-turn state), else restore the saved expression.
         if (_idleSavedMouth == 0) mouthApplyIdleTint();
         else                      mouthTFTShow(_idleSavedMouth);
     }
@@ -556,9 +430,8 @@ void mouthIdleTick(uint32_t nowMs) {
                 if (halfCycle >= 6) {
                     _idleRestore(nowMs);
                 } else {
-                    _tft->fillScreen(MTFT_BLACK);
-                    if (halfCycle & 1) _draw_silly_retracted();
-                    else               _draw_silly();
+                    // alternate tongue-down (silly) and tongue-up (retracted) sprites
+                    _showSprite((halfCycle & 1) ? MOUTH_SPR_SILLYRET : MOUTH_SPR[9]);
                 }
             }
             break;

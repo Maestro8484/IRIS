@@ -25,6 +25,11 @@ from core.config import (
     VOL_CONTROL, VOL_MIN, VOL_MAX, VOL_STEP,
     LOUD_STOP_THRESHOLD,
 )
+# STOP_PHRASES / FOLLOWUP_DISMISSALS moved to core/speech_gates.py (S192 AUD-7
+# test-suite session) so they're defined once and importable without pyaudio;
+# re-exported here unchanged so existing `from hardware.audio_io import
+# STOP_PHRASES, FOLLOWUP_DISMISSALS` call sites (assistant.py) keep working.
+from core.speech_gates import STOP_PHRASES, FOLLOWUP_DISMISSALS
 from hardware.io import button_pressed
 
 
@@ -41,26 +46,6 @@ INTERRUPT_RMS_THRESHOLD = 4000
 
 # LOUD_STOP_THRESHOLD imported from core.config — tune via iris_config.json.
 # S88 observed bleed at 9k-18k RMS; raised to 25000. Overridable via iris_config.json.
-
-# Stop phrases checked via lightweight STT during playback
-STOP_PHRASES = {
-    "stop", "cancel", "nevermind", "never mind", "quiet", "shut up",
-    "be quiet", "stop talking", "that's enough", "enough", "hey jarvis",
-    "jarvis stop", "ok stop", "please stop",
-}
-
-# Polite filler responses that end the follow-up loop without LLM processing
-FOLLOWUP_DISMISSALS = {
-    "thank you", "thanks", "thank you very much", "thanks very much",
-    "thank you so much", "thanks so much",
-    "ok", "okay", "ok thanks", "okay thanks", "ok thank you", "okay thank you",
-    "great", "great thanks", "great thank you", "sounds great",
-    "got it", "got it thanks", "got it thank you",
-    "alright", "all right", "alright thanks", "sounds good", "perfect",
-    "no", "no thanks", "no thank you", "nope", "that's all", "that is all",
-    "that's it", "that is it", "i'm good", "im good", "i'm all good",
-    "cool", "cool thanks", "awesome", "wonderful", "excellent",
-}
 
 
 # ── Device discovery ──────────────────────────────────────────────────────────
@@ -212,7 +197,7 @@ def _playback_interrupt_listener(pa_ref, stop_event, interrupted_event):
                 transcript = _stt.transcribe(b"".join(frames)).lower().strip()
                 print(f"[INT]  STT: '{transcript}'", flush=True)
                 if any(p in transcript for p in STOP_PHRASES):
-                    print("[INT]  Stop phrase matched — firing interrupt", flush=True)
+                    print("[INT]  Stop phrase matched -- firing interrupt", flush=True)
                     interrupted_event.set()
                     _stop_playback.set()
             except Exception as e:
@@ -233,12 +218,12 @@ def _playback_interrupt_listener(pa_ref, stop_event, interrupted_event):
             if not collecting and rms > detect_threshold:
                 peak_bleed = max(peak_bleed, rms)
 
-            # Effective loud-stop floor adapts above observed speaker bleed (1.5× peak).
+            # Effective loud-stop floor adapts above observed speaker bleed (1.5x peak).
             # Prevents false instant-interrupt when IRIS's own voice spikes past the fixed
             # LOUD_STOP_THRESHOLD (seen at VOL_MAX=126 where bleed peaks at ~26000-27000).
             effective_loud_stop = max(LOUD_STOP_THRESHOLD, peak_bleed * 1.5)
             if rms > effective_loud_stop:
-                print(f"[INT]  Loud stop triggered (RMS={rms:.0f} > {effective_loud_stop:.0f}) — instant interrupt", flush=True)
+                print(f"[INT]  Loud stop triggered (RMS={rms:.0f} > {effective_loud_stop:.0f}) -- instant interrupt", flush=True)
                 interrupted_event.set()
                 _stop_playback.set()
                 break
@@ -331,6 +316,27 @@ _EMOTION_SPEAK_FRAMES = {
     'AMUSED':    [2, 0, 2, 5],
 }
 
+# RD-044 lip-sync: mouth animation is driven by a (time_sec, sprite_idx) timeline
+# fired off actual playback position. _MOUTH_REST is the closed/resting sprite the
+# jaw returns to between words and during the pre-speech settle.
+_MOUTH_REST      = 0      # NEUTRAL (matches viseme_map.MOUTH_CLOSED)
+_MOUTH_LEAD_S    = 0.0    # extra visual lead beyond ALSA output latency (tunable)
+_LEGACY_TICK_S   = 0.50   # fixed-timer fallback cadence when no word timing exists
+
+
+def _legacy_timeline(duration_s: float, frames):
+    """Build a fixed-0.5s cycling timeline (old blind behaviour) for one blob when
+    word timestamps are unavailable (Piper fallback or a failed captioned call).
+    Keeps the position-driven player on a single uniform code path."""
+    tl = []
+    t = 0.0
+    i = 0
+    while t < max(duration_s, 0.001):
+        tl.append((round(t, 4), frames[i % len(frames)]))
+        t += _LEGACY_TICK_S
+        i += 1
+    return tl
+
 
 def play_pcm_speaking(pcm_bytes: bytes, pa, teensy, emotion: str = 'NEUTRAL',
                       restore_mouth_idx: int = 0, rate: int = 48000) -> bool:
@@ -360,7 +366,8 @@ def play_pcm_speaking(pcm_bytes: bytes, pa, teensy, emotion: str = 'NEUTRAL',
 
 def play_pcm_stream(pcm_queue, pa, teensy, emotion: str = 'NEUTRAL',
                     restore_mouth_idx: int = 0, rate: int = 48000,
-                    interrupted: threading.Event | None = None) -> bool:
+                    interrupted: threading.Event | None = None,
+                    stats: dict | None = None) -> bool:
     """
     Gapless playback of a stream of PCM blobs pulled from pcm_queue (queue.Queue).
 
@@ -381,6 +388,9 @@ def play_pcm_stream(pcm_queue, pa, teensy, emotion: str = 'NEUTRAL',
 
     Returns True if playback was interrupted mid-stream (stop phrase, loud stop,
     button, or _stop_playback set externally).
+
+    If `stats` (a dict) is passed, P4 inter-sentence gap telemetry is written
+    into it at drain: blobs_played, gap_count, gap_total_ms, gap_max_ms (D1).
     """
     frames = _EMOTION_SPEAK_FRAMES.get(emotion.upper(), _EMOTION_SPEAK_FRAMES['NEUTRAL'])
     if interrupted is None:
@@ -395,24 +405,40 @@ def play_pcm_stream(pcm_queue, pa, teensy, emotion: str = 'NEUTRAL',
     )
     _int_thread.start()
 
-    # Single continuous mouth animation for the whole utterance
-    anim_stop = threading.Event()
-
-    def _animate():
-        i = 0
-        while not anim_stop.wait(0.50):
-            teensy.send_command(f"MOUTH:{frames[i % len(frames)]}")
-            i += 1
-        teensy.send_command(f"MOUTH:{restore_mouth_idx}")
-
     teensy.send_command("EYES:SPEAKING")
+    teensy.send_command(f"MOUTH:{_MOUTH_REST}")   # rest closed during the settle
     time.sleep(0.35)
-    anim_thread = threading.Thread(target=_animate, daemon=True)
-    anim_thread.start()
 
     stream = pa.open(format=pyaudio.paInt16, channels=2, rate=rate,
                      output=True, frames_per_buffer=512)
     _SLICE = 512 * 4  # bytes per blocking-write slice (512 frames * 2ch * 2B)
+    _BYTES_PER_SEC_MONO = rate * 2  # s16le mono blob -> seconds
+
+    # ── RD-044 position-driven mouth scheduler ──────────────────────────────
+    # Each queue item carries an optional (time_sec, sprite_idx) timeline built
+    # from Kokoro's real per-word timestamps. Events fire when actual playback
+    # position crosses their time, so the mouth tracks the audio instead of a
+    # blind wall clock. `frames_written` leads what is HEARD by the ALSA output
+    # latency, so we subtract it as the visual lead.
+    try:
+        _out_latency = float(stream.get_output_latency())
+    except Exception:
+        _out_latency = 0.0
+    _lead = _out_latency + _MOUTH_LEAD_S
+    frames_written = 0          # stereo frames handed to ALSA (== mono samples)
+    schedule = []               # sorted [(abs_time_sec, idx)] across all blobs
+    _sched = {"i": 0, "last": _MOUTH_REST}
+
+    def _fire_due():
+        heard_t = frames_written / rate - _lead
+        i = _sched["i"]
+        while i < len(schedule) and schedule[i][0] <= heard_t:
+            idx = schedule[i][1]
+            i += 1
+            if idx != _sched["last"]:
+                teensy.send_command(f"MOUTH:{idx}")
+                _sched["last"] = idx
+        _sched["i"] = i
 
     def _drain():
         while True:
@@ -422,15 +448,50 @@ def play_pcm_stream(pcm_queue, pa, teensy, emotion: str = 'NEUTRAL',
             except queue.Empty:
                 break
 
+    # ── P4 inter-sentence gap telemetry (S192f, audit AUD-8/D1) ──────────────
+    # A gap is dead-air risk: after playback has started, if the producer hasn't
+    # supplied the next blob yet, the blocking get() below waits -- and once
+    # ALSA's ~output-latency buffer drains, that wait is audible silence between
+    # sentences. We time each get() (cheap, off the write path) and count the
+    # ones that block after the first blob. The first get() is the pre-playback
+    # wait (TTFA), not a gap, so it's excluded. The end-of-stream sentinel isn't
+    # a gap either. Bounded: three ints summarized once per utterance -- no
+    # per-frame logging (respects feedback_no_unbounded_logging).
+    _blobs_played = 0
+    _gap_count = 0
+    _gap_total_ms = 0.0
+    _gap_max_ms = 0.0
+
     try:
         while True:
-            blob = pcm_queue.get()
-            if blob is None:
+            _g0 = time.monotonic()
+            item = pcm_queue.get()
+            _gap_ms = (time.monotonic() - _g0) * 1000.0
+            if item is None:
                 break
+            if _blobs_played > 0 and _gap_ms > 1.0:
+                _gap_count += 1
+                _gap_total_ms += _gap_ms
+                if _gap_ms > _gap_max_ms:
+                    _gap_max_ms = _gap_ms
             if interrupted.is_set() or _stop_playback.is_set() or button_pressed():
                 interrupted.set()
                 _drain()
                 break
+            # Item is (pcm_bytes, timeline) from the RD-044 producer; tolerate a
+            # bare bytes blob too (legacy callers) so nothing breaks mid-migration.
+            if isinstance(item, tuple):
+                blob, timeline = item
+            else:
+                blob, timeline = item, None
+            # Merge this blob's timeline into the absolute schedule at the audio
+            # offset where the blob begins (monotonic -> schedule stays sorted).
+            base = frames_written / rate
+            if timeline is None:
+                timeline = _legacy_timeline(len(blob) / _BYTES_PER_SEC_MONO, frames)
+            for _t, _idx in timeline:
+                schedule.append((base + _t, _idx))
+
             raw = np.frombuffer(blob, dtype=np.int16).astype(np.float32)
             samples = np.clip(raw, -32768, 32767).astype(np.int16)
             stereo = np.column_stack([samples, samples]).flatten().tobytes()
@@ -441,6 +502,9 @@ def play_pcm_stream(pcm_queue, pa, teensy, emotion: str = 'NEUTRAL',
                     break
                 stream.write(stereo[pos:pos + _SLICE])
                 pos += _SLICE
+                frames_written += _SLICE // 4
+                _fire_due()
+            _blobs_played += 1
             if interrupted.is_set():
                 _drain()
                 break
@@ -456,12 +520,18 @@ def play_pcm_stream(pcm_queue, pa, teensy, emotion: str = 'NEUTRAL',
             _tail = b"\x00" * (rate * 4 // 5)  # ~200 ms stereo s16le silence
             try:
                 stream.write(_tail)
+                frames_written += len(_tail) // 4
             except Exception:
                 pass
+            _fire_due()  # let the final word's closure land as the tail clocks through
         stream.stop_stream()
         stream.close()
-        anim_stop.set()
-        anim_thread.join(timeout=1.0)
+        # Smooth exit: close the jaw before restoring the resting/emotion sprite so
+        # the rest->speaking->rest boundary never snaps from an open frame. On an
+        # interrupt this still cleanly closes+restores (no stuck-open mouth).
+        if _sched["last"] != _MOUTH_REST:
+            teensy.send_command(f"MOUTH:{_MOUTH_REST}")
+        teensy.send_command(f"MOUTH:{restore_mouth_idx}")
         teensy.send_command("EYES:SPEAKING:STOP")
         _int_stop.set()
         _int_thread.join(timeout=1.0)
@@ -469,6 +539,19 @@ def play_pcm_stream(pcm_queue, pa, teensy, emotion: str = 'NEUTRAL',
     was_interrupted = interrupted.is_set()
     if was_interrupted:
         print("[STOP] Streaming playback interrupted", flush=True)
+
+    # P4 gap summary: one bounded line per utterance + optional stats dict for
+    # the bench row (S192f, D1). gap_total_ms is the total dead-air-risk time
+    # spent waiting on the producer after playback had already begun.
+    _gt = round(_gap_total_ms)
+    _gm = round(_gap_max_ms)
+    print(f"[BENCH] stage=gap_summary blobs_played={_blobs_played} "
+          f"gap_count={_gap_count} gap_total_ms={_gt} gap_max_ms={_gm}", flush=True)
+    if stats is not None:
+        stats["blobs_played"] = _blobs_played
+        stats["gap_count"] = _gap_count
+        stats["gap_total_ms"] = _gt
+        stats["gap_max_ms"] = _gm
     return was_interrupted
 
 

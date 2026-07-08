@@ -1,0 +1,48 @@
+# IRIS deploy manifest — one line per deployed file: repo_path|pi_path|flag
+# repo_path is relative to the repo root (this file's own repo is the source).
+# pi_path is the absolute live path on Pi4. flag is optional:
+#   COSMETIC_DRIFT_OK  — known-benign divergence (documented in SNAPSHOT), don't red-flag content diff, only check RAM==SD
+#   SYSTEM_PATH        — outside /home/pi (e.g. /etc/...); still checked RAM vs SD the same way, just a different tree
+# Blank lines and lines starting with # are ignored.
+# NOTE: systemd unit files (assistant.service, iris-web.service) are NOT
+# repo-tracked yet and are out of scope for this manifest (RAM==SD only would
+# still be checkable if added later, but there's no repo source to compare).
+# Runtime data files (iris_config.json, iris_soundboard.json, ps_config.json,
+# servo_config.json) are intentionally excluded -- they're operator-editable
+# state, not code deploys, so RAM/SD drift there is expected (WebUI writes)
+# and comparing against a repo copy would be meaningless.
+
+pi4/assistant.py|/home/pi/assistant.py|
+pi4/iris_web.py|/home/pi/iris_web.py|
+pi4/iris_web.html|/home/pi/iris_web.html|
+pi4/iris_web.js|/home/pi/iris_web.js|
+pi4/iris_web.css|/home/pi/iris_web.css|
+pi4/iris_help.html|/home/pi/iris_help.html|
+pi4/iris_post.py|/home/pi/iris_post.py|
+pi4/iris_sleep.py|/home/pi/iris_sleep.py|
+pi4/iris_wake.py|/home/pi/iris_wake.py|
+pi4/log_parser.py|/home/pi/log_parser.py|
+pi4/iris_bench_report.py|/home/pi/iris_bench_report.py|
+pi4/soundboard_api.py|/home/pi/soundboard_api.py|
+pi4/iris_web_soundboard.js|/home/pi/iris_web_soundboard.js|
+pi4/core/config.py|/home/pi/core/config.py|
+pi4/core/clip_player.py|/home/pi/core/clip_player.py|
+pi4/core/clip_triggers.py|/home/pi/core/clip_triggers.py|
+pi4/core/soundboard.py|/home/pi/core/soundboard.py|
+pi4/core/intent_router.py|/home/pi/core/intent_router.py|
+pi4/core/viseme_map.py|/home/pi/core/viseme_map.py|
+pi4/core/speech_gates.py|/home/pi/core/speech_gates.py|
+pi4/services/llm.py|/home/pi/services/llm.py|
+pi4/services/tts.py|/home/pi/services/tts.py|
+pi4/services/stt.py|/home/pi/services/stt.py|
+pi4/services/vision.py|/home/pi/services/vision.py|
+pi4/services/wakeword.py|/home/pi/services/wakeword.py|
+pi4/services/wyoming.py|/home/pi/services/wyoming.py|
+pi4/hardware/audio_io.py|/home/pi/hardware/audio_io.py|
+pi4/hardware/base_mount_bridge.py|/home/pi/hardware/base_mount_bridge.py|
+pi4/hardware/io.py|/home/pi/hardware/io.py|
+pi4/hardware/led.py|/home/pi/hardware/led.py|
+pi4/hardware/teensy_bridge.py|/home/pi/hardware/teensy_bridge.py|COSMETIC_DRIFT_OK
+pi4/state/state_manager.py|/home/pi/state/state_manager.py|
+pi4/scripts/iris_log_export.sh|/home/pi/scripts/iris_log_export.sh|
+pi4/scripts/99-iris-teensy.rules|/etc/udev/rules.d/99-iris-teensy.rules|SYSTEM_PATH

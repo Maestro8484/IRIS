@@ -1,8 +1,8 @@
 """
-services/tts.py - Text-to-speech (F5-TTS voice-clone primary, Kokoro fallback, Wyoming Piper last)
+services/tts.py - Text-to-speech (Kokoro primary, Wyoming Piper fallback)
 Returns raw s16le PCM bytes at 48000 Hz mono.
 
-synthesize(text) → bytes   — public entry point, routes F5 → Kokoro → Piper on failure
+synthesize(text) → bytes   — public entry point, routes Kokoro → Piper on failure
 spoken_numbers(text) → str — pre-processes numeric tokens for natural TTS
 """
 
@@ -14,14 +14,20 @@ import requests
 
 from core.config import (
     F5_BASE_URL, F5_ENABLED, F5_TIMEOUT,
-    KOKORO_BASE_URL, KOKORO_VOICE, KOKORO_ENABLED,
+    KOKORO_BASE_URL, KOKORO_ENABLED,
     GANDALF, PIPER_PORT, PIPER_VOICE,
     SAMPLE_RATE, CHANNELS, TTS_MAX_CHARS,
 )
+# KOKORO_VOICE is NOT imported at module level (unlike the above) -- it must be
+# re-imported per call (see _synthesize_kokoro/_synthesize_kokoro_captioned)
+# so a live core.config.reload_overrides() (S192b AUD-5) actually takes effect;
+# `from X import Y` at module scope freezes Y at first-import time forever.
 from services.wyoming import wy_send, read_line
+from core.viseme_map import build_mouth_timeline
+from core.normalize_tts import normalize_for_tts
 
 
-# ── F5-TTS (voice-clone DNA, primary) ─────────────────────────────────────────────
+# F5-TTS (voice-clone DNA, primary) ------------------------------------------------
 
 def _synthesize_f5(text: str, speed: float | None = None) -> bytes:
     """F5-TTS /v1/audio/speech on GandalfAI:8005 (voice-clone voice DNA).
@@ -55,7 +61,7 @@ def _synthesize_f5(text: str, speed: float | None = None) -> bytes:
 def _synthesize_kokoro(text: str, speed: float | None = None) -> bytes:
     """Kokoro-FastAPI /v1/audio/speech endpoint. Returns s16le PCM at 48000 Hz."""
     import miniaudio
-    from core.config import KOKORO_SPEED
+    from core.config import KOKORO_SPEED, KOKORO_VOICE
     url = f"{KOKORO_BASE_URL}/v1/audio/speech"
     payload = {
         "model": "kokoro",
@@ -80,6 +86,49 @@ def _synthesize_kokoro(text: str, speed: float | None = None) -> bytes:
     return pcm
 
 
+def _synthesize_kokoro_captioned(text: str, speed: float | None = None):
+    """Kokoro-FastAPI /dev/captioned_speech — returns (pcm, word_timestamps).
+
+    RD-044 (mouth lip-sync). Same voice/speed contract as _synthesize_kokoro, but
+    the response is JSON: base64 WAV in 'audio' plus a per-word 'timestamps' list
+    of {'word','start_time','end_time'} (relative to this utterance's audio start,
+    verified live S189). Phase 0 bench: no measurable TTFA cost vs /v1/audio/speech
+    idle or under LLM load. Raises on any failure so the caller can fall back to
+    the plain (untimed) path."""
+    import base64
+    import miniaudio
+    from core.config import KOKORO_SPEED, KOKORO_VOICE
+    url = f"{KOKORO_BASE_URL}/dev/captioned_speech"
+    payload = {
+        "model": "kokoro",
+        "input": text,
+        "voice": KOKORO_VOICE,
+        "response_format": "wav",
+        "speed": speed if speed is not None else KOKORO_SPEED,
+        "stream": False,
+        "return_timestamps": True,
+    }
+    resp = requests.post(url, json=payload, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    b64 = data.get("audio")
+    words = data.get("timestamps") or []
+    if not b64:
+        raise RuntimeError("[KOKCAP] no audio field in response")
+    wav_bytes = base64.b64decode(b64)
+    if len(wav_bytes) < 44:
+        raise RuntimeError(f"[KOKCAP] audio too short: {len(wav_bytes)} bytes")
+    decoded = miniaudio.decode(
+        wav_bytes,
+        output_format=miniaudio.SampleFormat.SIGNED16,
+        nchannels=1,
+        sample_rate=48000,
+    )
+    pcm = bytes(decoded.samples)
+    print(f"[KOKCAP] OK {len(pcm)}b PCM ({decoded.duration:.1f}s) words={len(words)}", flush=True)
+    return pcm, words
+
+
 # ── Piper (Wyoming) ───────────────────────────────────────────────────────────
 
 def _synthesize_piper(text: str) -> bytes:
@@ -96,7 +145,10 @@ def _synthesize_piper(text: str) -> bytes:
             dlen = hdr.get("data_length", 0)
             plen = hdr.get("payload_length", 0)
             while len(buf) < dlen + plen:
-                buf += s.recv(8192)
+                chunk = s.recv(8192)
+                if not chunk:
+                    raise RuntimeError("piper: connection closed mid-stream")
+                buf += chunk
             pcm = buf[dlen:dlen + plen]
             buf = buf[dlen + plen:]
             if etype == "audio-chunk" and pcm:
@@ -188,11 +240,11 @@ def _truncate_for_tts(text: str, max_chars: int = TTS_MAX_CHARS) -> str:
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def synthesize(text: str, speed: float | None = None) -> bytes:
-    """Kokoro first; Piper fallback. Returns s16le PCM at 48000 Hz.
-    Optional speed overrides KOKORO_SPEED (used by quip cache for faster wakeword responses)."""
-    text = spoken_numbers(text)
-    # Strip markdown and speech markers that must never reach TTS
+def _clean_tts_text(text: str) -> str:
+    """Strip markdown / speech markers / non-ASCII and truncate for TTS. Shared by
+    synthesize() and synthesize_captioned() so word timestamps align to the exact
+    text that is actually spoken."""
+    text = normalize_for_tts(text)                           # S194 Rung4: bench-proven normalizer (was spoken_numbers)
     text = re.sub(r'\*+', '', text)                          # bold/italic asterisks
     text = re.sub(r'_{1,2}([^_]+)_{1,2}', r'\1', text)      # _italic_ and __bold__
     text = re.sub(r'#+\s*', '', text)                        # headers
@@ -201,7 +253,13 @@ def synthesize(text: str, speed: float | None = None) -> bytes:
     text = re.sub(r'\[chuckle\]|\[laugh\]|\[sigh\]|\[gasp\]', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\s+', ' ', text).strip()
     text = re.sub(r'[^\x00-\x7F]+', ' ', text).strip()      # existing non-ASCII strip (keep)
-    text = _truncate_for_tts(text)
+    return _truncate_for_tts(text)
+
+
+def synthesize(text: str, speed: float | None = None) -> bytes:
+    """Kokoro first; Piper fallback. Returns s16le PCM at 48000 Hz.
+    Optional speed overrides KOKORO_SPEED (used by quip cache for faster wakeword responses)."""
+    text = _clean_tts_text(text)
 
     if F5_ENABLED:
         try:
@@ -214,3 +272,23 @@ def synthesize(text: str, speed: float | None = None) -> bytes:
         except Exception as e:
             print(f"[KOK]  Failed: {e} -- falling back to Piper", flush=True)
     return _synthesize_piper(text)
+
+
+def synthesize_captioned(text: str, speed: float | None = None):
+    """RD-044 word-timed variant. Returns (pcm_bytes, mouth_timeline) where
+    mouth_timeline is a list of (time_sec, sprite_idx) built from Kokoro's real
+    per-word timestamps, or None if word timing is unavailable for this utterance
+    (F5 active, Kokoro disabled, or the captioned call failed) — in which case the
+    caller falls back to the legacy fixed-timer mouth animation. PCM is always
+    returned so the turn never goes silent on a timing failure."""
+    cleaned = _clean_tts_text(text)
+    # Word timing only exists on the Kokoro captioned endpoint. F5/Piper have none.
+    if not F5_ENABLED and KOKORO_ENABLED:
+        try:
+            pcm, words = _synthesize_kokoro_captioned(cleaned, speed=speed)
+            timeline = build_mouth_timeline(words)
+            return pcm, (timeline or None)
+        except Exception as e:
+            print(f"[KOKCAP] Failed: {e} -- falling back to untimed synth", flush=True)
+    # No timing path available: plain PCM, player uses legacy animation.
+    return synthesize(text, speed=speed), None

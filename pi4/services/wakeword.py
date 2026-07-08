@@ -51,18 +51,30 @@ def wait_for_wakeword_or_button(mic, oww_sock) -> str:
                             score = data.get("score", None)
                             if score is None:
                                 scores = data.get("scores", {})
-                                # Detection event = OWW already passed threshold; 1.0 if no score
-                                score = max(scores.values()) if scores else 1.0
-                            print(f"[OWW]  score={score:.3f} (threshold={OWW_THRESHOLD})",
-                                  flush=True)
-                            if score < OWW_THRESHOLD:
-                                continue
+                                score = max(scores.values()) if scores else None
+                            if score is None:
+                                # Server (wyoming-openwakeword) does not include a
+                                # confidence value in its Detection event -- it only
+                                # fires once its OWN --threshold is exceeded server-side.
+                                # Do NOT fabricate a score here (previously defaulted to
+                                # 1.0, which made every wake look like a perfect-confidence
+                                # match in the logs and hid the real detection strength).
+                                print(f"[OWW]  detection (name={hdr.get('data', {}).get('name', WAKE_WORD)}, "
+                                      f"server-threshold={OWW_THRESHOLD}, no score in event)",
+                                      flush=True)
+                            else:
+                                print(f"[OWW]  score={score:.3f} (threshold={OWW_THRESHOLD})",
+                                      flush=True)
+                                if score < OWW_THRESHOLD:
+                                    continue
                             trigger[0] = "wake"
                             detected.set()
                             return
                     except json.JSONDecodeError:
                         pass
             except Exception:
+                trigger[0] = "error"
+                detected.set()
                 break
 
     try:

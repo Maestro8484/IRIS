@@ -31,6 +31,17 @@ _ROUTINE_TX_PREFIXES = ("MOUTH:", "MOUTH_INTENSITY:", "GAZE:")
 # Inbound line prefixes that are routine per-frame chatter.
 _ROUTINE_RX_PREFIXES = ("[SR]",)
 
+# S185 (Vision Cal hardening): FACE:1/FACE:0 and the boot-time "Person Sensor
+# detected"/"no ACK" lines are edge-triggered -- printed once at Teensy boot or
+# on a lock/lose transition, never as a "still here" signal. assistant.service
+# restarts routinely (every deploy, per project rules) and the Teensy keeps
+# running through that restart, so a steady, continuously-tracking sensor can
+# go all day without asserting anything new to the journal -- iris_web.py's
+# /api/ps/status then reads that silence as UNKNOWN even though the sensor and
+# link are fine. This periodic, bounded (RD-031) heartbeat gives it fresh
+# evidence to key off instead.
+PS_HEARTBEAT_INTERVAL_S = 60
+
 
 class TeensyBridge:
     def __init__(self, port: str = TEENSY_PORT, baud: int = TEENSY_BAUD, on_reconnect=None):
@@ -40,6 +51,9 @@ class TeensyBridge:
         self._lock = threading.Lock()
         self._active = True
         self._on_reconnect = on_reconnect
+        self._ps_present = None   # None=unknown, True/False once a real signal is seen
+        self._ps_face    = None
+        self._ps_last_hb = 0.0
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _open(self):
@@ -78,8 +92,23 @@ class TeensyBridge:
                 continue
             try:
                 line = ser.readline().decode(errors="ignore").strip()
-                if line and (DEBUG_SERIAL or not line.startswith(_ROUTINE_RX_PREFIXES)):
-                    print(f"[EYES] << {line}", flush=True)
+                if line:
+                    if "Person Sensor detected" in line:
+                        self._ps_present = True
+                    elif "no ACK at 0x62" in line or "No Person Sensor" in line:
+                        self._ps_present = False
+                    elif "FACE:1" in line:
+                        self._ps_face = True
+                    elif "FACE:0" in line:
+                        self._ps_face = False
+                    if DEBUG_SERIAL or not line.startswith(_ROUTINE_RX_PREFIXES):
+                        print(f"[EYES] << {line}", flush=True)
+                now = time.time()
+                if self._ps_present is not None and now - self._ps_last_hb >= PS_HEARTBEAT_INTERVAL_S:
+                    self._ps_last_hb = now
+                    face_s = "?" if self._ps_face is None else int(self._ps_face)
+                    print(f"[EYES] PS_HEARTBEAT present={int(self._ps_present)} face={face_s}",
+                          flush=True)
             except (serial.SerialException, OSError):
                 print("[EYES] Serial disconnected -- will retry", flush=True)
                 with self._lock:
