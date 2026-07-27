@@ -75,6 +75,7 @@ function tab(name, btn) {
   document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
   document.getElementById('sec-' + name).classList.add('active');
   btn.classList.add('active');
+  attachDefBadges();   // tabs that build controls dynamically get badges too
   if (name === 'logs') fetchLogs();
   if (name === 'audio') refreshVolume();
   if (name === 'system') { pollStatus(); checkSDStatus(); }
@@ -82,7 +83,7 @@ function tab(name, btn) {
   if (name === 'voice') { loadKokoroVoices(); }
   if (name === 'gandalf') loadVram();
   if (name === 'bench') { fetchBench(); fetchBenchRecent(); }
-  if (name === 'gestures') { loadGestureConfig(); fetchGestureLog(); loadGestureStats(); }
+  if (name === 'gestures') { loadGestureConfig(); loadBargeinConfig(); fetchGestureLog(); loadGestureStats(); }
   if (name === 'eyes') { pollSleepState(); loadEmotionMap(); _syncMouthSliders(); }
   if (name === 'ogle_cal') { loadPsStatus(); loadSensorLeds(); }
   if (name === 'sleep') {
@@ -151,13 +152,26 @@ async function persistToSD() {
 
 // ── Config load/save ──────────────────────────────────────────────────────────
 let _cfg = {};
+// ── S201b: display-unit helpers (backend keys stay ms / Celsius; UI shows s / F) ──
+const _MS_FIELDS = ['ENDPOINT_BASELINE_MS','ENDPOINT_ONSET_MIN_MS','KIDS_THINK_FILLER_MS','KIDS_THINK_FILLER2_MS'];
+const _PS_SCALE = { LOST_MS: 1000 };   // display seconds -> wire ms for these PS_CFG keys
+const _psToDisp = (key, wire) => wire / (_PS_SCALE[key] || 1);
+const _psToWire = (key, disp) => _PS_SCALE[key] ? Math.round(disp * _PS_SCALE[key]) : disp;
+const _tempF = c => { const n = parseFloat(c); return isNaN(n) ? '--' : Math.round(n * 9 / 5 + 32) + 'F'; };
+
 async function loadConfig() {
   const r = await fetch('/api/config');
   _cfg = await r.json();
   for (const [k, v] of Object.entries(_cfg)) {
     const el = document.getElementById(k);
     if (!el) continue;
-    if (el.tagName === 'SELECT') el.value = String(v);
+    // Real JSON booleans (true/false) have to be mapped onto the 0/1 option
+    // values these selects use, or the browser finds no matching <option> and
+    // silently falls back to the FIRST one. Live proof at S224d:
+    // CONVO_SESSION_ENABLED is true and the WebUI was showing it as "Off".
+    // Older keys stored 1/0 as ints and displayed fine, which is why this hid.
+    if (el.tagName === 'SELECT') el.value = (v === true) ? '1' : (v === false) ? '0' : String(v);
+    else if (_MS_FIELDS.includes(k)) el.value = v / 1000;   // S201b: ms key shown in seconds
     else el.value = v;
   }
   // Sync mouth-intensity sliders + value labels on both the Sleep and Face tabs
@@ -168,6 +182,21 @@ async function loadConfig() {
   // Pre-select current default eye
   const defEyeSel = document.getElementById('default-eye-sel');
   if (defEyeSel && _cfg.DEFAULT_EYE_IDX !== undefined) defEyeSel.value = String(_cfg.DEFAULT_EYE_IDX);
+  // S201: bool selects the generic loop mis-maps (config returns a JS bool; options are '0'/'1')
+  _kidsBoolSel('ENDPOINT_DEBUG', _cfg.ENDPOINT_DEBUG);
+  // S214: AEC bool selects (same 0/1-vs-JS-bool mismatch as ENDPOINT_DEBUG)
+  _kidsBoolSel('BARGEIN_AEC_ENABLED',      _cfg.BARGEIN_AEC_ENABLED);
+  _kidsBoolSel('BARGEIN_PRESENCE_ENABLED', _cfg.BARGEIN_PRESENCE_ENABLED);
+  _kidsBoolSel('BARGEIN_PRESENCE_KIDS',    _cfg.BARGEIN_PRESENCE_KIDS);
+  _kidsBoolSel('AEC_DEBUG',                _cfg.AEC_DEBUG);
+  // S220b: conversation-session/trajectory bool selects (same mismatch)
+  _kidsBoolSel('CONVO_SESSION_ENABLED', _cfg.CONVO_SESSION_ENABLED);
+  _kidsBoolSel('TRAJECTORY_ENABLED',    _cfg.TRAJECTORY_ENABLED);
+  _kidsBoolSel('TRAJECTORY_THREADS_ENABLED', _cfg.TRAJECTORY_THREADS_ENABLED);
+  _kidsBoolSel('TRAJECTORY_DEBUG',      _cfg.TRAJECTORY_DEBUG);
+  // RD-068: weather master flag (same JS-bool-vs-'0'/'1' mismatch)
+  _kidsBoolSel('WEATHER_ENABLED',       _cfg.WEATHER_ENABLED);
+  _kidsBoolSel('WEATHER_MISS_CLAUSE',   _cfg.WEATHER_MISS_CLAUSE);
 }
 
 async function saveFields(keys) {
@@ -176,12 +205,23 @@ async function saveFields(keys) {
     const el = document.getElementById(k);
     if (!el) continue;
     const raw = el.value;
-    patch[k] = isNaN(raw) || raw === '' ? raw : Number(raw);
+    if (_MS_FIELDS.includes(k)) patch[k] = Math.round(Number(raw) * 1000);   // S201b: seconds -> ms key
+    else patch[k] = isNaN(raw) || raw === '' ? raw : Number(raw);
   }
   const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch)});
   const j = await r.json();
   toast(j.ok ? 'Saved to RAM' : 'Error', j.ok);
   if (j.ok) checkSDStatus();
+}
+
+// S215 personality continuum: recenters all three sliders (0.5 = detent 0 =
+// empty steering clause = exactly standard IRIS) and saves in one call.
+async function resetPersonality() {
+  for (const k of ['PERSONA_TONE_KIDS', 'PERSONA_TONE_ADULT', 'PERSONA_ENGAGE']) {
+    const el = document.getElementById(k);
+    if (el) el.value = 0.5;
+  }
+  await saveFields(['PERSONA_TONE_KIDS', 'PERSONA_TONE_ADULT', 'PERSONA_ENGAGE']);
 }
 
 async function saveDefaultEye() {
@@ -459,7 +499,7 @@ async function pollStatus() {
   const j = await r.json();
   const dot = document.getElementById('dot-assistant');
   const lbl = document.getElementById('lbl-assistant');
-  document.getElementById('lbl-temp').textContent = j.cpu_temp + 'C';
+  document.getElementById('lbl-temp').textContent = _tempF(j.cpu_temp);
   document.getElementById('lbl-uptime').textContent = j.uptime;
   dot.className = 'dot' + (j.running ? ' on' : '');
   lbl.textContent = j.running ? 'running' : 'stopped';
@@ -467,7 +507,7 @@ async function pollStatus() {
   const st = document.getElementById('sys-temp');
   const su = document.getElementById('sys-uptime');
   if(sr) { sr.textContent = j.running ? 'running' : 'stopped'; sr.style.color = j.running ? 'var(--green)' : 'var(--red)'; }
-  if(st) st.textContent = j.cpu_temp + 'C';
+  if(st) st.textContent = _tempF(j.cpu_temp);
   if(su) su.textContent = j.uptime;
   if (typeof j.sleeping === 'boolean') updateSleepUI(j.sleeping);
   pollHealth();
@@ -535,6 +575,72 @@ function _drawSpark(id, vals) {
   });
   ctx.stroke();
 }
+// ── Versions / About (RD-048, S213) ────────────────────────────────────────────
+// Renders /api/version. Every value is self-reported by the live component;
+// staleness colours follow the sys-heartbeat pattern (green fresh / amber
+// stale-or-preversioning / red unknown-or-mismatch).
+async function pollVersion() {
+  let j;
+  try { j = await (await fetch('/api/version')).json(); }
+  catch (e) { return; }
+  const set = (id, txt, color) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = txt;
+    if (color) el.style.color = color;
+  };
+  const AMBER = 'var(--amber, #d8a200)';
+  const _ageStr = s => s < 90 ? `${Math.round(s)}s` : s < 5400 ? `${Math.round(s / 60)}m`
+                     : s < 172800 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86400)}d`;
+  const _fwRow = (c, age, expected) => {
+    if (!c || !c.firmware) return ['not reported yet (arrives with the Teensy boot banner)', 'var(--red)'];
+    let txt = c.firmware + (c.built ? ` (built ${c.built})` : '');
+    if (age != null) txt += ` — reported ${_ageStr(age)} ago`;
+    if (c.proto == null) return [txt + ' — no proto (pre-S213 firmware)', AMBER];
+    if (c.proto !== expected) return [txt + ` — PROTO MISMATCH fw=${c.proto} pi=${expected}`, 'var(--red)'];
+    return [txt, 'var(--green)'];
+  };
+  const [et, ec] = _fwRow(j.eyes, j.eyes_age_s, j.eyes_expected_proto);
+  set('ver-eyes', et, ec);
+  const [st2, sc2] = _fwRow(j.servo, j.servo_age_s, j.servo_expected_proto);
+  set('ver-servo', st2, sc2);
+  const pe = (j.eyes && j.eyes.proto != null) ? j.eyes.proto : '?';
+  const ps = (j.servo && j.servo.proto != null) ? j.servo.proto : '?';
+  const protoOk = pe === j.eyes_expected_proto && ps === j.servo_expected_proto;
+  set('ver-proto', `eyes ${pe}/${j.eyes_expected_proto} · servo ${ps}/${j.servo_expected_proto}`,
+      protoOk ? 'var(--green)' : AMBER);
+  const p4 = j.pi4 || {};
+  set('ver-pi4', `assistant.py ${p4.assistant_py || '?'} · iris_web.py ${p4.iris_web_py || '?'}`,
+      (p4.assistant_py && p4.iris_web_py) ? 'var(--text)' : AMBER);
+  // A tag is not a model name (WEBUI_TODEPLOY item 1, S244). Both LLM rows say
+  // what each tag is BUILT FROM; the base comes from ollama's own
+  // details.parent_model, so it cannot drift the way a typed string would.
+  const _llmRow = (m) => {
+    if (!m) return ['unreachable (GandalfAI asleep — normal; wakes on wakeword)', AMBER];
+    if (m.missing) return [`${m.tag} — NOT on GandalfAI (config names a model that does not exist there)`, 'var(--red)'];
+    const spec = [m.params, m.quant].filter(Boolean).join(' ');
+    const what = m.derived ? `→ ${m.base}` : `→ ${m.base} (a base model, no IRIS layer)`;
+    return [`${m.tag} ${what}${spec ? ' · ' + spec : ''} · build ${m.digest}`, 'var(--green)'];
+  };
+  const ol = j.ollama;
+  const [lat, lac] = _llmRow(ol && ol.adult);
+  set('ver-llm-adult', lat, lac);
+  const [lkt, lkc] = _llmRow(ol && ol.kids);
+  set('ver-llm-kids', lkt, lkc);
+  if (!ol) {
+    set('ver-llm-other', 'unreachable (GandalfAI asleep)', AMBER);
+  } else {
+    // Names only, never sizes: these all share the base weights file, so listing
+    // a size per tag would imply disk use that is not there.
+    const ot = ol.other_iris_tags || [];
+    set('ver-llm-other', ot.length
+        ? `${ot.length} staging tag${ot.length === 1 ? '' : 's'}, all sharing the same weights: ${ot.join(', ')}`
+        : 'none', 'var(--muted)');
+  }
+  const kk = j.kokoro || {};
+  set('ver-kokoro', kk.voice ? `${kk.voice} @ ${kk.speed}` : '?', 'var(--text)');
+}
+
 async function pollSysstat() {
   let j;
   try { j = await (await fetch('/api/sysstat')).json(); }
@@ -553,7 +659,7 @@ async function pollSysstat() {
   set('ss-logs',    (j.logs_mb || '?') + 'M / 100M cap', lm >= 90 ? 'var(--amber,#d8a200)' : 'var(--text)');
   set('ss-load',    (j.load || []).join(' / '), 'var(--text)');
   set('ss-mem',     `${j.mem_used_mb}M used / ${j.mem_avail_mb}M avail / ${j.mem_total_mb}M`, 'var(--text)');
-  set('ss-temp',    (j.temp_c != null ? j.temp_c + 'C' : '?'),
+  set('ss-temp',    (j.temp_c != null ? _tempF(j.temp_c) : '?'),
                     (j.temp_c >= 70 ? 'var(--red)' : 'var(--text)'));
   set('ss-throttle', j.throttled || '?',
                     (j.throttled && j.throttled !== '0x0') ? 'var(--red)' : 'var(--green)');
@@ -571,21 +677,49 @@ async function restartAssistant() {
 async function loadVram() {
   const box = document.getElementById('vram-box');
   box.textContent = 'Loading...';
+  // Same call fills the Ollama Models card above: a tag is not a model name
+  // (WEBUI_TODEPLOY item 1, S244), so both cards say what the tag resolves to.
+  const setGm = (id, txt, color) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = txt;
+    el.style.color = color;
+  };
+  const _actRow = (m) => {
+    if (!m) return ['GandalfAI asleep, cannot confirm what this tag resolves to', 'var(--amber,#d8a200)'];
+    if (m.missing) return [`"${m.tag}" is NOT on GandalfAI — nothing will answer`, 'var(--red)'];
+    const spec = [m.params, m.quant].filter(Boolean).join(' ');
+    const what = m.derived ? `built on ${m.base}` : `is itself the base model`;
+    return [`${m.resolved} → ${what}${spec ? ' · ' + spec : ''}`, 'var(--green)'];
+  };
   try {
     const r = await fetch('/api/vram');
     const j = await r.json();
+    const act = j.active || {};
+    const [ta, ca] = _actRow(j.reachable ? act.adult : null);
+    setGm('gm-adult', ta, ca);
+    const [tk, ck] = _actRow(j.reachable ? act.kids : null);
+    setGm('gm-kids', tk, ck);
     if (j.error) { box.textContent = 'Gandalf offline: ' + j.error; return; }
     const models = j.models || [];
     if (!models.length) { box.textContent = 'No models loaded in VRAM'; return; }
-    box.textContent = models.map(m =>
-      `${m.name}\n  size: ${(m.size/1e9).toFixed(1)} GB  vram: ${(m.size_vram/1e9).toFixed(1)} GB`
-    ).join('\n\n');
+    box.textContent = models.map(m => {
+      const spec = [m.params, m.quant].filter(Boolean).join(' ');
+      const base = m.derived ? `\n  built on: ${m.base}${spec ? '  (' + spec + ')' : ''}`
+                 : (spec ? `\n  base model (no IRIS layer)  (${spec})` : '');
+      const ctx  = m.context_length ? `  context: ${m.context_length}` : '';
+      return `${m.name}${base}\n  size: ${(m.size/1e9).toFixed(1)} GB  vram: ${(m.size_vram/1e9).toFixed(1)} GB${ctx}`;
+    }).join('\n\n');
   } catch(e) { box.textContent = 'Error: ' + e; }
 }
 
 // ── Chat ───────────────────────────────────────────────────────────────────────
 let _chatMode    = 'silent';   // 'silent' | 'speak' | 'verbatim'
 let _chatPersona = 'adult';
+// RD-064: prior typed turns, sent to /api/chat as `history` so typed multi-turn
+// chat carries context (and episodic recall) exactly like the voice path. The
+// server is stateless -- it holds no history of its own. Cleared by clearChat().
+let _chatTranscript = [];
 
 const _CHAT_MODE_HINTS = {
   silent:   '',
@@ -640,12 +774,15 @@ async function sendChat() {
   try {
     const r = await fetch('/api/chat', {method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({text, speak: _chatMode === 'speak', mode: _chatPersona})});
+      body: JSON.stringify({text, speak: _chatMode === 'speak', mode: _chatPersona, history: _chatTranscript})});
     const j = await r.json();
     if (j.reply) {
       const spokenTag  = j.spoken  ? ' [spoken]'           : '';
       const emotionTag = j.emotion ? ` {${j.emotion}}`     : '';
       thinking.textContent = 'IRIS' + spokenTag + emotionTag + ': ' + j.reply;
+      // RD-064: record the turn so the next typed message carries this context.
+      _chatTranscript.push({role:'user', content:text}, {role:'assistant', content:j.reply});
+      if (_chatTranscript.length > 40) _chatTranscript = _chatTranscript.slice(-40);
     } else {
       thinking.className = 'chat-msg err';
       thinking.textContent = 'Error: ' + (j.error || 'unknown');
@@ -659,6 +796,7 @@ async function sendChat() {
 
 function clearChat() {
   document.getElementById('chat-box').innerHTML = '';
+  _chatTranscript = [];   // RD-064: a cleared box starts a fresh conversation
 }
 
 // ── Vision Demo ───────────────────────────────────────────────────────────────
@@ -695,14 +833,57 @@ async function sendVision(prompt) {
 }
 
 // ── Emotion Display Mapping ────────────────────────────────────────────────────
-const _EMOTION_NAMES = ['NEUTRAL','HAPPY','CURIOUS','ANGRY','SLEEPY','SURPRISED','SAD','CONFUSED','AMUSED'];
-const _EYE_OPT = [[-1,'Default (auto)'],[0,'0 - Nordic Blue'],[1,'1 - Flame'],[2,'2 - Hypno Red'],
-  [3,'3 - Hazel'],[4,'4 - Blue Flame 1'],[5,'5 - Dragon'],[6,'6 - Striking Blue']];
+const _EMOTION_NAMES = ['NEUTRAL','HAPPY','CURIOUS','ANGRY','SLEEPY','SURPRISED','SAD','CONFUSED','AMUSED',
+  'ANNOYED','EXASPERATED'];
+// S241: ONE eye-name table drives both the Eye Style button grid and the
+// Emotion Display eye dropdown. Order and index must match eyeDefinitions in
+// src/config.h -- adding a firmware eye is then a one-line edit here.
+// A star marks the sets authored as asymmetric left/right pairs.
+const _EYE_NAMES = ['Nordic Blue','Flame','Hypno Red','Hazel','Blue Flame 1','Dragon','Striking Blue',
+  'Cat','Doom Spiral *','Anime *','Doe *','Demon *','Skull','Leopard *','Toon Stripe','Fizzgig',
+  'Newt','Snake','Fish','Brown','Big Blue','Spikes','Firebox','Blue Flame 2','Doom Red'];
+const _EYE_OPT = [[-1,'Default (auto)']].concat(_EYE_NAMES.map((n,i)=>[i, i+' - '+n]));
+
+// Fill the Eye Style grid from _EYE_NAMES (the buttons used to be hand-written
+// markup capped at index 6, which silently hid every new firmware eye).
+function _buildEyeGrid() {
+  const grid = document.getElementById('eye-style-grid');
+  if (!grid) return;
+  grid.innerHTML = _EYE_NAMES.map((n,i)=>
+    `<button class="btn-eye" onclick="sendTeensy('EYE:${i}')">${i} - ${n}</button>`).join('');
+}
 const _MOUTH_OPT = [[0,'0 - Neutral'],[1,'1 - Happy'],[2,'2 - Curious'],[3,'3 - Angry'],
   [4,'4 - Sleepy'],[5,'5 - Surprised'],[6,'6 - Sad'],[7,'7 - Confused'],
   [8,'8 - Sleep'],[9,'9 - Silly (tongue)']];
 
 let _emotionMap = {mouth_map:{}, eye_map:{}};
+
+// S242: what each emotion does to the EYELIDS, transcribed from the S241 lid
+// choreographer table (src/main.cpp lidScripts[EMOTION_COUNT]). Shown so the
+// operator can see the whole per-emotion effect in one row instead of inferring
+// the lid half from firmware source.
+//
+// READ-ONLY ON PURPOSE, and this is the accurate status, not a shortcut: the lid
+// envelopes are `static const LidKey[]` arrays compiled into the T4.1, and the
+// firmware serial dispatch (src/main.cpp:581-710) accepts EMOTION:, EYE:, MOUTH:,
+// MOUTH_INTENSITY:, MOUTHGEST, EYES:*, IDLE:*, VERSION and SLEEP_CFG: -- there is
+// no LID command, so nothing on the Pi can change these at runtime. Making them
+// editable needs a firmware change (a LID_CFG: key=value command in the SLEEP_CFG:
+// mould, plus a RAM copy of the table) and an operator flash. Scoped in ROADMAP
+// RD-069. Keep these strings in step with lidScripts if that table is retuned.
+const _LID_EFFECTS = {
+  NEUTRAL:     'None, lids follow tracking',
+  HAPPY:       'Duchenne squint, lower lid up, 3.5 s',
+  CURIOUS:     'Slight widen, blinking held off, 3.7 s',
+  ANGRY:       'Upper lid drops, lower tightens, 4.6 s',
+  SLEEPY:      'Heavy droop, slow closures, 6.0 s',
+  SURPRISED:   'Snaps wide, then settles, 1.2 s',
+  SAD:         'Heavy lids, one slow blink, 5.4 s',
+  CONFUSED:    'Uncertain drift plus widen, 3.6 s',
+  AMUSED:      'Pulsing squint, 2.1 s',
+  ANNOYED:     'Narrowed squeeze, quick release, 0.9 s',
+  EXASPERATED: 'Eye-roll on a gaze arc, 0.95 s',
+};
 
 function _buildEmotionMapUI(data) {
   _emotionMap = data;
@@ -714,17 +895,21 @@ function _buildEmotionMapUI(data) {
     const curE = data.eye_map[emo] ?? -1;
     const eOpts = _EYE_OPT.map(([v,l])=>`<option value="${v}"${v==curE?' selected':''}>${l}</option>`).join('');
     const mOpts = _MOUTH_OPT.map(([v,l])=>`<option value="${v}"${v==curM?' selected':''}>${l}</option>`).join('');
+    const lid   = _LID_EFFECTS[emo] || 'None';
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td style="padding:5px 8px;font-size:13px;color:var(--amber);white-space:nowrap">${emo}</td>
       <td style="padding:3px 8px"><select id="em-eye-${emo}">${eOpts}</select></td>
       <td style="padding:3px 8px"><select id="em-mouth-${emo}">${mOpts}</select></td>
+      <td style="padding:3px 8px;font-size:12px;color:var(--muted);white-space:nowrap"
+          title="Eyelid choreography baked into T4.1 firmware. Not editable from the WebUI -- needs a firmware LID_CFG: command and a flash (ROADMAP RD-069).">${lid}</td>
       <td style="padding:3px 8px"><button class="btn btn-sm" onclick="testEmotionEntry('${emo}')">Test</button></td>`;
     tbl.appendChild(tr);
   }
 }
 
 async function loadEmotionMap() {
+  _buildEyeGrid();   // S241: same lifecycle as the emotion table (boot + section show)
   try {
     const r = await fetch('/api/emotion_map');
     _buildEmotionMapUI(await r.json());
@@ -909,6 +1094,8 @@ async function loadGestureConfig() {
       const sel = document.getElementById('gesture-' + key);
       if (sel && map[key]) sel.value = map[key];
     });
+    const es = document.getElementById('gesture-enabled');
+    if (es && typeof j.GESTURE_ENABLED !== 'undefined') es.value = j.GESTURE_ENABLED ? 'true' : 'false';
   } catch(e) { toast('Failed to load gesture config', false); }
 }
 
@@ -918,14 +1105,101 @@ async function saveGestureConfig() {
     const sel = document.getElementById('gesture-' + key);
     if (sel) map[key] = sel.value;
   });
+  const es = document.getElementById('gesture-enabled');
+  const enabled = es ? es.value === 'true' : true;
   const r = await fetch('/api/gesture_config', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({GESTURE_MAP: map})
+    body: JSON.stringify({GESTURE_MAP: map, GESTURE_ENABLED: enabled})
   });
   const j = await r.json();
   toast(j.ok ? 'Gesture config saved' : 'Error saving gesture config', j.ok);
   if (j.ok) checkSDStatus();
+}
+
+// ── Voice barge-in config ─────────────────────────────────────────────────────
+// Phrases are fixed (must be in the offline recognizer's lexicon); each maps to
+// an action. Mirrors the server _DEFAULT_BARGEIN_GRAMMAR order.
+const _BARGEIN_PHRASES = [
+  'stop', 'cancel', 'be quiet', 'shut up', 'stop talking', 'pause',
+  'louder', 'volume up', 'quieter', 'volume down',
+];
+const _BARGEIN_ACTIONS = ['STOP', 'VOL+', 'VOL-', 'SKIP'];
+const _BARGEIN_ACTION_LABELS = {
+  'STOP': 'Stop talking',
+  'VOL+': 'Volume up',
+  'VOL-': 'Volume down',
+  'SKIP': 'Disabled',
+};
+
+function _bargeinId(phrase) { return 'bargein-' + phrase.replace(/ /g, '_'); }
+
+function _renderBargeinRows(grammar) {
+  const box = document.getElementById('bargein-grammar-rows');
+  if (!box) return;
+  box.innerHTML = '';
+  _BARGEIN_PHRASES.forEach(function(phrase) {
+    const row = document.createElement('div');
+    row.className = 'field-row';
+    const lab = document.createElement('label');
+    lab.textContent = '"' + phrase + '"';
+    const sel = document.createElement('select');
+    sel.id = _bargeinId(phrase);
+    _BARGEIN_ACTIONS.forEach(function(act) {
+      const o = document.createElement('option');
+      o.value = act;
+      o.textContent = _BARGEIN_ACTION_LABELS[act];
+      sel.appendChild(o);
+    });
+    sel.value = grammar[phrase] || 'SKIP';
+    row.appendChild(lab);
+    row.appendChild(sel);
+    box.appendChild(row);
+  });
+}
+
+async function loadBargeinConfig() {
+  try {
+    const r = await fetch('/api/bargein_config');
+    const j = await r.json();
+    _renderBargeinRows(j.BARGEIN_GRAMMAR || {});
+    const en = document.getElementById('bargein-enabled');
+    if (en) en.value = j.BARGEIN_ENABLED ? 'true' : 'false';
+    const eng = document.getElementById('bargein-engine');
+    if (eng && j.BARGEIN_ENGINE) eng.value = j.BARGEIN_ENGINE;
+    // S222: adult detect multiplier (was unreachable from any UI)
+    const am = document.getElementById('bargein-mult');
+    if (am) am.value = j.BARGEIN_DETECT_MULT ?? 1.5;
+    // S199 T3: kids barge-in guard numerics
+    const km = document.getElementById('kids-bargein-mult');
+    if (km) km.value = j.KIDS_BARGEIN_DETECT_MULT ?? 2.0;
+    const kg = document.getElementById('kids-bargein-guard');
+    if (kg) kg.value = (j.KIDS_BARGEIN_GUARD_MS ?? 800) / 1000;   // S201b: ms -> seconds
+  } catch(e) { toast('Failed to load barge-in config', false); }
+}
+
+async function saveBargeinConfig() {
+  const grammar = {};
+  _BARGEIN_PHRASES.forEach(function(phrase) {
+    const sel = document.getElementById(_bargeinId(phrase));
+    if (sel && sel.value !== 'SKIP') grammar[phrase] = sel.value;
+  });
+  const en = document.getElementById('bargein-enabled');
+  const eng = document.getElementById('bargein-engine');
+  const r = await fetch('/api/bargein_config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      BARGEIN_GRAMMAR: grammar,
+      BARGEIN_ENABLED: en ? en.value === 'true' : true,
+      BARGEIN_ENGINE: eng ? eng.value : 'vosk',
+      BARGEIN_DETECT_MULT: parseFloat(document.getElementById('bargein-mult')?.value) || 1.5,
+      KIDS_BARGEIN_DETECT_MULT: parseFloat(document.getElementById('kids-bargein-mult')?.value) || 2.0,
+      KIDS_BARGEIN_GUARD_MS: Math.round((parseFloat(document.getElementById('kids-bargein-guard')?.value) || 0.8) * 1000),   // S201b: seconds -> ms
+    })
+  });
+  const j = await r.json();
+  toast(j.ok ? 'Voice commands saved' : 'Error saving voice commands', j.ok);
 }
 
 // ── Gesture log ───────────────────────────────────────────────────────────────
@@ -1188,9 +1462,21 @@ function _oglecalTabHook() {
 const _PS_CFG_FIELDS = [
   // [key, label, type, min, max, step, default]
   ['CONF',    'Confidence gate (0–100)',     'range',  0,    100,   5,    60   ],
-  ['FACING',  'Require facing camera',            'toggle', 0,    1,     1,    1    ],
-  ['LOST_MS', 'Face-lost timeout (ms)',           'range',  1000, 15000, 500,  5000 ],
+  // S212: SEN0626 has no is_facing equivalent, so the shim hardcodes is_facing=1
+  // and this gate can never reject anything. Labelled rather than removed because
+  // the I2C Person Sensor rollback (USE_PERSON_SENSOR_I2C) restores a real bit.
+  ['FACING',  'Require facing camera (no effect on SEN0626)', 'toggle', 0, 1,  1,    1    ],
+  ['LOST_MS', 'Face-lost timeout (s)',            'range',  1,    15,    0.5,  5    ],
   ['Y_BIAS',  'Y bias (neg = look up)',           'range',  -1.0, 1.0,   0.05, 0.0  ],
+  // S212c gaze shaping: targetN = rawN * gain + bias. Gain is SIGNED - the sign is
+  // the direction (flip it if the eyes track mirrored) and the magnitude is the
+  // range. At a close conversational distance a head only crosses a fraction of the
+  // sensor's 85 deg FOV, so raw deflection is small and 1.0 reads as "barely moves";
+  // 2.0-2.5 makes it read as real gaze. +1.0 is the SEN0626 convention; a rollback to
+  // the I2C Person Sensor needs X_GAIN=-1.0.
+  ['X_GAIN',  'X gain (neg = mirror L/R)',        'range',  -3.0, 3.0,   0.1,  1.0  ],
+  ['Y_GAIN',  'Y gain (neg = mirror U/D)',        'range',  -3.0, 3.0,   0.1,  1.0  ],
+  ['X_BIAS',  'X bias (neg = look left)',         'range',  -1.0, 1.0,   0.05, 0.0  ],
 ];
 
 function _buildPsCfgFields(data) {
@@ -1198,8 +1484,8 @@ function _buildPsCfgFields(data) {
   if (!container) return;
   container.innerHTML = '';
   _PS_CFG_FIELDS.forEach(([key, label, type, min, max, step, def]) => {
-    const rawVal = (data && data[key] != null) ? data[key] : def;
-    const val = parseFloat(rawVal);
+    // S201b: data[key] is the wire value (LOST_MS in ms); def is already display units (s).
+    const val = (data && data[key] != null) ? _psToDisp(key, parseFloat(data[key])) : parseFloat(def);
     const row = document.createElement('div');
     row.className = 'field-row';
     if (type === 'toggle') {
@@ -1263,10 +1549,10 @@ async function loadPsConfig() {
         el.checked = (parseFloat(data[key]) == 1);
         if (sp) sp.textContent = el.checked ? '1' : '0';
       } else {
-        el.value = data[key];
+        const disp = _psToDisp(key, parseFloat(data[key]));   // S201b: wire ms -> display s for LOST_MS
+        el.value = disp;
         if (sp) {
-          const n = parseFloat(data[key]);
-          sp.textContent = step < 0.1 ? n.toFixed(3) : step < 1 ? n.toFixed(2) : '' + Math.round(n);
+          sp.textContent = step < 0.1 ? disp.toFixed(3) : step < 1 ? disp.toFixed(2) : '' + Math.round(disp);
         }
       }
     });
@@ -1283,7 +1569,7 @@ async function savePsConfig() {
   _PS_CFG_FIELDS.forEach(([key, label, type]) => {
     const el = document.getElementById('psf-' + key);
     if (!el) return;
-    body[key] = type === 'toggle' ? (el.checked ? 1 : 0) : parseFloat(el.value);
+    body[key] = type === 'toggle' ? (el.checked ? 1 : 0) : _psToWire(key, parseFloat(el.value));   // S201b: display s -> wire ms for LOST_MS
   });
   try {
     const r = await fetch('/api/ps/config', {
@@ -1342,6 +1628,80 @@ async function fetchBenchRecent() {
   bd.textContent = parts.join(' / ') + tot + cold;
 }
 
+
+// ── Field definitions: click popover (S222) ───────────────────────────────────
+// The text comes from CFG_MAP in iris_defs.js, the SAME array the help page's
+// settings table renders. There is no second copy to drift. Row shape:
+//   [section, key, type, range, default, tab, description, behavior?]
+// The optional 8th element is the tier: present means a real "what this changes
+// in her behavior" line for a knob humans turn; absent means the popover is
+// generated from the columns, which is correct for plumbing.
+//
+// Click, not hover: the WebUI is used from a phone and hover does not exist on
+// touch. Badges are injected from the data, so a new row needs no HTML edit.
+
+// Controls whose element id is not the config key (verified S222).
+const _DEF_ALIAS = {
+  'vol-slider': 'SPEAKER_VOLUME',
+  'default-eye-sel': 'DEFAULT_EYE_IDX',
+  'kids-bargein-mult': 'KIDS_BARGEIN_DETECT_MULT',
+};
+
+function _defRow(key) {
+  if (typeof CFG_MAP === 'undefined') return null;
+  return CFG_MAP.find(r => r[1] === key) || null;
+}
+
+function showDef(key) {
+  const r = _defRow(key);
+  if (!r) return;
+  document.getElementById('defpop-title').textContent = r[0] + ': ' + r[1];
+  // Tier 1 leads with behavior; the reference description follows it.
+  document.getElementById('defpop-body').textContent = r[7] ? r[7] : (r[6] || '');
+  const meta = [];
+  if (r[2] && r[2] !== 'n/a') meta.push(r[2]);
+  if (r[3] && r[3] !== 'n/a') meta.push('range ' + r[3]);
+  if (r[4] && r[4] !== 'n/a') meta.push('default ' + r[4]);
+  if (r[7] && r[6]) meta.push('—');
+  document.getElementById('defpop-meta').textContent =
+    meta.filter(x => x !== '—').join('  ·  ') + (r[7] && r[6] ? '\n' + r[6] : '');
+  document.getElementById('defpop').style.display = 'block';
+}
+
+function closeDef() { document.getElementById('defpop').style.display = 'none'; }
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDef(); });
+
+// Inject one badge per field that has a definition. Idempotent, so it is safe
+// to re-run after a tab builds its controls dynamically.
+function attachDefBadges() {
+  if (typeof CFG_MAP === 'undefined') return;
+  const byKey = {};
+  CFG_MAP.forEach(r => { byKey[r[1]] = r; });
+  const targets = [];
+  Object.keys(byKey).forEach(k => targets.push([k, k]));
+  Object.entries(_DEF_ALIAS).forEach(([id, k]) => { if (byKey[k]) targets.push([id, k]); });
+
+  targets.forEach(([id, key]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const row = el.closest('.field-row') || el.parentElement;
+    if (!row || row.querySelector('.def-badge[data-k="' + key + '"]')) return;
+    const host = row.querySelector('label') || row;
+    const b = document.createElement('span');
+    b.className = 'def-badge';
+    b.dataset.k = key;
+    b.textContent = '?';
+    b.title = 'What does this do?';
+    b.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;' +
+      'width:15px;height:15px;margin-left:6px;border-radius:50%;cursor:pointer;' +
+      'border:1px solid var(--border);color:var(--muted);font-size:10px;' +
+      'font-weight:700;vertical-align:middle;flex-shrink:0';
+    b.onclick = (e) => { e.stopPropagation(); showDef(key); };
+    host.appendChild(b);
+  });
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────────
 loadConfig();
 loadEmotionMap();
@@ -1349,9 +1709,142 @@ pollStatus();
 pollSleepState();
 checkSDStatus();
 pollSysstat();
+attachDefBadges();
+pollVersion();
 fetchBenchRecent();
 setInterval(pollStatus, 15000);
 setInterval(pollSleepState, 5000);
 setInterval(checkSDStatus, 30000);
 setInterval(pollSysstat, 10000);
+setInterval(pollVersion, 60000);
 setInterval(fetchBenchRecent, 30000);
+
+// ── Kids tab (RD-047) ─────────────────────────────────────────────────────────
+// Kids mode was voice-entry only and reverted silently after 30 min of quiet.
+// The toggle reads the LIVE mode from /api/kids_mode (backed by the flag file
+// assistant.py maintains) so it never lies about the current state.
+
+function _kidsBoolSel(id, val) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const on = (val === true || val === 1 || val === '1' || val === 'true');
+  el.value = on ? '1' : '0';
+}
+
+async function loadKidsMode() {
+  try {
+    const r = await fetch('/api/kids_mode');
+    const j = await r.json();
+    _kidsBoolSel('kids-mode-sel', j.enabled);
+    const s = document.getElementById('kids-mode-state');
+    if (s) {
+      s.textContent = j.enabled ? 'live: ON' : 'live: off';
+      s.style.color = j.enabled ? 'var(--accent)' : '';
+    }
+  } catch (e) { /* assistant may be restarting */ }
+}
+
+async function saveKidsMode() {
+  const el = document.getElementById('kids-mode-sel');
+  if (!el) return;
+  const on = el.value === '1';
+  const r = await fetch('/api/kids_mode', {method:'POST', headers:{'Content-Type':'application/json'},
+                                           body: JSON.stringify({enabled: on})});
+  const j = await r.json();
+  toast(j.ok ? (on ? 'Kids mode ON' : 'Kids mode off') : 'Toggle failed', j.ok);
+  setTimeout(loadKidsMode, 400);   // read back the live flag
+}
+
+let _kidsProfile = {children: []};
+
+function _renderKidRows() {
+  const box = document.getElementById('kids-profile-rows');
+  if (!box) return;
+  box.innerHTML = '';
+  // Build with real nodes + addEventListener rather than inline oninput= strings:
+  // a child's name or interest can contain quotes, and an escaped newline inside a
+  // stringly-built handler attribute is a browser SyntaxError waiting to happen.
+  _kidsProfile.children.forEach((c, i) => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.margin = '8px 0';
+
+    const mkRow = (labelHtml, field) => {
+      const row = document.createElement('div');
+      row.className = 'field-row';
+      const lab = document.createElement('label');
+      lab.innerHTML = labelHtml;
+      row.appendChild(lab);
+      row.appendChild(field);
+      card.appendChild(row);
+      return row;
+    };
+
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.value = c.name || '';
+    name.addEventListener('input', () => { _kidsProfile.children[i].name = name.value; });
+    mkRow('Name', name);
+
+    const age = document.createElement('input');
+    age.type = 'number'; age.min = '0'; age.max = '21'; age.style.width = '80px';
+    age.value = (c.age === null || c.age === undefined) ? '' : c.age;
+    age.addEventListener('input', () => {
+      _kidsProfile.children[i].age = age.value === '' ? null : Number(age.value);
+    });
+    mkRow('Age', age);
+
+    const ta = document.createElement('textarea');
+    ta.rows = 5; ta.style.flex = '1'; ta.style.minWidth = '260px';
+    ta.value = (c.interests || []).join('\n');
+    ta.addEventListener('input', () => {
+      _kidsProfile.children[i].interests =
+        ta.value.split('\n').map(s => s.trim()).filter(Boolean);
+    });
+    mkRow('Interests<br><span class="hint">one per line</span>', ta).style.alignItems = 'flex-start';
+
+    const del = document.createElement('button');
+    del.className = 'btn';
+    del.textContent = 'Remove ' + (c.name || 'child');
+    del.addEventListener('click', () => removeKidRow(i));
+    card.appendChild(del);
+
+    box.appendChild(card);
+  });
+}
+
+function addKidRow() {
+  _kidsProfile.children.push({name: '', age: null, interests: []});
+  _renderKidRows();
+}
+
+function removeKidRow(i) {
+  _kidsProfile.children.splice(i, 1);
+  _renderKidRows();
+}
+
+async function loadKidsProfile() {
+  try {
+    const r = await fetch('/api/kids_profile');
+    const j = await r.json();
+    _kidsProfile = {children: j.children || []};
+    _renderKidRows();
+  } catch (e) { toast('Profile load failed', false); }
+}
+
+async function saveKidsProfile() {
+  const r = await fetch('/api/kids_profile', {method:'POST', headers:{'Content-Type':'application/json'},
+                                              body: JSON.stringify({children: _kidsProfile.children})});
+  const j = await r.json();
+  if (!j.ok) { toast('Save failed: ' + (j.error || 'error'), false, 4000); return; }
+  _kidsProfile = {children: j.children || []};
+  _renderKidRows();
+  toast(j.sd === false ? 'Saved to RAM (SD persist FAILED)' : 'Profile saved — RAM + SD', j.sd !== false, 3500);
+}
+
+function _kidsTabHook() {
+  loadKidsMode();
+  loadKidsProfile();
+  _kidsBoolSel('KIDS_ENDPOINT_CUE', _cfg.KIDS_ENDPOINT_CUE);
+  _kidsBoolSel('KIDS_GAP_FILLERS',  _cfg.KIDS_GAP_FILLERS);
+}

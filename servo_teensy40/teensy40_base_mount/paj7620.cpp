@@ -93,6 +93,23 @@ bool paj7620Init() {
   // enabled by the 0x41/0x42 writes at the top of this array).
   paj_write(0xEF, 0x00);
 
+  // RD-059 range floor. Applied AFTER the stock array so these deliberately
+  // override PixArt's defaults; see paj7620.h for why object size is the only
+  // distance control available while gesture recognition is running. Each is
+  // skipped when 0 so a single constant can be reverted to stock in isolation.
+  // 10-bit fields split low byte / high bits[9:8] per datasheet 7.6.
+#if GESTURE_START_TH
+  paj_write(0x84, (uint8_t)(GESTURE_START_TH & 0xFF));
+  paj_write(0x85, (uint8_t)((GESTURE_START_TH >> 8) & 0x03));
+#endif
+#if GESTURE_END_TH
+  paj_write(0x86, (uint8_t)(GESTURE_END_TH & 0xFF));
+  paj_write(0x87, (uint8_t)((GESTURE_END_TH >> 8) & 0x03));
+#endif
+#if GESTURE_LIGHT_TH
+  paj_write(0x83, (uint8_t)(GESTURE_LIGHT_TH & 0xFF));
+#endif
+
   return true;
 }
 
@@ -124,45 +141,23 @@ void pollGesture() {
   unsigned long now = millis();
 
   // Global cooldown: any gesture within GESTURE_COOLDOWN_MS of the last one is suppressed.
-  if ((now - _lastAnyMs) < (unsigned long)GESTURE_COOLDOWN_MS) {
-#if SERIAL_DIAG
-    Serial.print("DIAG: PAJ7620 gest=0x");
-    Serial.print(gest, HEX);
-    Serial.println(" SUPPRESSED cooldown");
-#endif
-    return;
-  }
+  if ((now - _lastAnyMs) < (unsigned long)GESTURE_COOLDOWN_MS) return;
 
   // Per-gesture debounce: same gesture within GESTURE_DEBOUNCE_MS is suppressed.
-  if ((now - _lastGestMs[bitPos]) < (unsigned long)GESTURE_DEBOUNCE_MS) {
-#if SERIAL_DIAG
-    Serial.print("DIAG: PAJ7620 gest=0x");
-    Serial.print(gest, HEX);
-    Serial.println(" SUPPRESSED debounce");
-#endif
-    return;
-  }
+  if ((now - _lastGestMs[bitPos]) < (unsigned long)GESTURE_DEBOUNCE_MS) return;
+
+  // Reversal suppression (RD-059): drop the withdrawal stroke of a swipe.
+  // The 0x43 bit pairs are (Left,Right) (Down,Up) (Fwd,Back) (CW,CCW), so a
+  // gesture's opposite is always its bit index XOR 1. That holds on the raw
+  // register bits, which makes this independent of GESTURE_MOUNT_DEGREES --
+  // rotating the mount relabels which bit is "up" but never pairs them
+  // differently. Suppressed events deliberately do NOT stamp _lastGestMs, so a
+  // sustained alternating burst cannot hold its own window open indefinitely.
+  if ((now - _lastGestMs[bitPos ^ 1]) < (unsigned long)GESTURE_REVERSAL_MS) return;
 
   // Gesture passes — record timestamps before emit.
   _lastAnyMs          = now;
   _lastGestMs[bitPos] = now;
-
-#if SERIAL_DIAG
-  // ===== CODEX DIAGNOSTIC INSERT BEGIN: PAJ7620U2 raw gesture byte =====
-  // Prints raw register value and physical direction (rotation-corrected via GEST_* defines).
-  Serial.print("DIAG: PAJ7620 gest=0x");
-  Serial.print(gest, HEX);
-  if      (gest & GEST_UP)    Serial.print(" UP");
-  else if (gest & GEST_DOWN)  Serial.print(" DOWN");
-  else if (gest & GEST_LEFT)  Serial.print(" LEFT");
-  else if (gest & GEST_RIGHT) Serial.print(" RIGHT");
-  else if (gest & 0x10)       Serial.print(" FORWARD");
-  else if (gest & 0x20)       Serial.print(" BACKWARD");
-  else if (gest & 0x40)       Serial.print(" CW");
-  else if (gest & 0x80)       Serial.print(" CCW");
-  Serial.println();
-  // ===== CODEX DIAGNOSTIC INSERT END: PAJ7620U2 raw gesture byte =====
-#endif
 
   // Emit command — do not change these strings, Pi4 base_mount_bridge.py depends on them
   if      (gest & GEST_UP)    Serial.println("VOL+");

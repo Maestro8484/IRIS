@@ -5,7 +5,7 @@ import requests
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import sys; sys.path.insert(0, "/home/pi")
-from core.config import CMD_PORT
+from core.config import CMD_PORT, GANDALF, OLLAMA_PORT
 from log_parser import _TS_RE, _MSG_RE, _DRIFT_SIGNALS, _parse_event_msg, _sd_events
 
 app = Flask(__name__)
@@ -19,16 +19,18 @@ try:
 except Exception as _sb_e:
     print(f"[WEB] soundboard blueprint not loaded: {_sb_e}", flush=True)
 
-GANDALF      = "192.168.1.3"
+GANDALF      = "192.168.0.20"
 OLLAMA_PORT  = 11434
-KOKORO_URL   = "http://192.168.1.3:8004"
+KOKORO_URL   = "http://192.168.0.20:8004"
 CONFIG_FILE  = "/home/pi/iris_config.json"
 SD_CONFIG    = "/media/root-ro/home/pi/iris_config.json"
 _WEB_DIR     = os.path.dirname(os.path.abspath(__file__))
 HTML_FILE    = os.path.join(_WEB_DIR, "iris_web.html")
 CSS_FILE     = os.path.join(_WEB_DIR, "iris_web.css")
 JS_FILE      = os.path.join(_WEB_DIR, "iris_web.js")
+DEFS_FILE    = os.path.join(_WEB_DIR, "iris_defs.js")
 HELP_FILE    = os.path.join(_WEB_DIR, "iris_help.html")
+GUIDE_FILE   = os.path.join(_WEB_DIR, "iris_guide.html")
 SLEEP_FLAG   = "/tmp/iris_sleep_mode"
 _cfg_lock    = threading.Lock()  # RD-034: serialise all config read-modify-write + persist
 # S175: serialises the root-ro mount cycles inside api_persist_config (config cp,
@@ -167,9 +169,20 @@ def iris_css():
 def iris_js():
     with open(JS_FILE) as f: return f.read(), 200, {"Content-Type": "application/javascript; charset=utf-8"}
 
+@app.route("/iris_defs.js")
+def iris_defs_js():
+    """Shared field definitions (S222). Read by BOTH the WebUI popovers and
+    the help page settings table, so the two can never drift apart."""
+    with open(DEFS_FILE) as f:
+        return f.read(), 200, {"Content-Type": "application/javascript; charset=utf-8"}
+
 @app.route("/help")
 def help_page():
     with open(HELP_FILE) as f: return f.read()
+
+@app.route("/guide")
+def guide_page():
+    with open(GUIDE_FILE) as f: return f.read()
 
 @app.route("/api/status")
 def api_status():
@@ -263,6 +276,119 @@ def api_sysstat():
         trend=trend,
     )
 
+
+# ── Ollama model identity (WEBUI_TODEPLOY item 1, S244) ────────────────────────
+# A bare tag ("iris") tells a reader nothing about what is actually RUNNING, and
+# both surfaces whose whole job is to answer "what is running?" showed only tags
+# plus hex digests. Ollama's own /api/tags already carries details.parent_model
+# for every derived tag, so the base name is SELF-REPORTED by the live artifact:
+# no second /api/show round trip, and no hardcoded base string (a typed base
+# lies the day the modelfile changes -- the S101 [VER] lesson).
+_BLOB_PARENT_RE = re.compile(r"^(/|[A-Za-z]:[\\/]|sha256[-:])")
+
+def _ollama_catalog():
+    """Live tag catalog from GandalfAI: {tag: {base, derived, params, quant,
+    family, digest}}. Returns None when GandalfAI is unreachable -- it sleeps by
+    design, so that is a normal state and not a fault."""
+    try:
+        r = requests.get(f"http://{GANDALF}:{OLLAMA_PORT}/api/tags", timeout=2)
+        out = {}
+        for m in r.json().get("models", []):
+            name = m.get("name") or ""
+            if not name:
+                continue
+            d = m.get("details") or {}
+            base = (d.get("parent_model") or "").strip()
+            # Imported models report a blob PATH as their parent, which is not a
+            # name a human can read -- treat it as having no parent.
+            if base and _BLOB_PARENT_RE.match(base):
+                base = ""
+            out[name] = {
+                "base":    base or name,          # a root model IS its own base
+                "derived": bool(base),
+                "params":  d.get("parameter_size") or "",
+                "quant":   d.get("quantization_level") or "",
+                "family":  d.get("family") or "",
+                "digest":  (m.get("digest") or "")[:12],
+            }
+        return out
+    except Exception:
+        return None
+
+def _ollama_active(cat):
+    """The two tags IRIS actually talks to, resolved against the live catalog.
+    Config precedence matches api_chat(): iris_config.json override first, else
+    core.config -- which is where both currently live, since no OLLAMA_MODEL_*
+    key is ever written to iris_config.json."""
+    from core.config import OLLAMA_MODEL_ADULT as _MA, OLLAMA_MODEL_KIDS as _MK
+    cfg = read_cfg()
+    out = {}
+    for role, key, dflt in (("adult", "OLLAMA_MODEL_ADULT", _MA),
+                            ("kids",  "OLLAMA_MODEL_KIDS",  _MK)):
+        tag = cfg.get(key) or dflt
+        hit = None
+        if cat:
+            for cand in (tag, f"{tag}:latest"):   # config stores "iris", ollama stores "iris:latest"
+                if cand in cat:
+                    hit = dict(cat[cand], resolved=cand)
+                    break
+        # missing=True only when the catalog WAS readable and the tag was not in
+        # it: config points at a model GandalfAI does not have, which is a real
+        # fault and must not be coloured the same as "asleep".
+        out[role] = dict(hit or {}, tag=tag, missing=(cat is not None and hit is None))
+    return out
+
+@app.route("/api/version")
+def api_version():
+    """Versions / About aggregate (RD-048 move 7, S213). Every value is
+    SELF-REPORTED by the live artifact (firmware boot banners cached by the
+    bridges in /tmp/iris_versions.json, live file md5s, live Ollama tags) --
+    never hand-typed (S101 lesson: a typed version lies the day a bump is
+    forgotten). Computed on request only, never logged (RD-031/RD-032).
+    /home/pi is not a git repo, so Pi4 code identity = live file md5s (matches
+    the project's per-session md5 deploy records)."""
+    import hashlib as _hl
+    from core.protocol import (EXPECTED_EYES_PROTOCOL, EXPECTED_SERVO_PROTOCOL,
+                               read_component_versions)
+    comps = read_component_versions()
+    now = time.time()
+
+    def _age(c):
+        ts = (comps.get(c) or {}).get("seen_ts")
+        return round(now - ts, 1) if ts else None
+
+    def _md5_8(path):
+        try:
+            with open(path, "rb") as f:
+                return _hl.md5(f.read()).hexdigest()[:8]
+        except Exception:
+            return None
+    _cat    = _ollama_catalog()   # None == GandalfAI asleep (a normal state)
+    _active = _ollama_active(_cat)
+    # Every OTHER iris* tag on the box is reported by NAME ONLY, never with a
+    # size. ollama reports a LOGICAL per-tag size, and all iris tags plus the
+    # base point at ONE 14.14 GB weight blob (manifest-verified S238 + S244), so
+    # per-tag sizes would claim ~155 GB of disk that does not exist.
+    _live   = {(_active[r] or {}).get("resolved") for r in ("adult", "kids")}
+    ollama  = None if _cat is None else {
+        "adult": _active["adult"],
+        "kids":  _active["kids"],
+        "other_iris_tags": sorted(t for t in _cat
+                                  if t.startswith("iris") and t not in _live),
+    }
+    import core.config as _cfg
+    return jsonify(
+        eyes=comps.get("eyes"), eyes_age_s=_age("eyes"),
+        eyes_expected_proto=EXPECTED_EYES_PROTOCOL,
+        servo=comps.get("servo"), servo_age_s=_age("servo"),
+        servo_expected_proto=EXPECTED_SERVO_PROTOCOL,
+        pi4={"assistant_py": _md5_8("/home/pi/assistant.py"),
+             "iris_web_py": _md5_8("/home/pi/iris_web.py")},
+        ollama=ollama,
+        kokoro={"voice": getattr(_cfg, "KOKORO_VOICE", None),
+                "speed": getattr(_cfg, "KOKORO_SPEED", None)},
+    )
+
 @app.route("/api/config", methods=["GET","POST"])
 def api_config():
     if request.method == "POST":
@@ -276,8 +402,21 @@ def api_config():
         # core.config globals and quip cache stayed frozen at whatever voice was
         # live at boot until a manual restart. Nudge it to reload live, same
         # pattern as soundboard_api.py's RELOAD_SOUNDBOARD.
-        if any(k.startswith("KOKORO_") for k in patch):
+        # RD-047: the kids tunables need the same nudge. KIDS_SILENCE_SECS and
+        # friends are read per-call off core.config (see hardware/audio_io.py
+        # record_command), so a RELOAD_CONFIG makes a Kids-card save take effect
+        # on the very next turn -- no restart.
+        if any(k.startswith("KOKORO_") or k.startswith("KIDS_") for k in patch):
             send_teensy("RELOAD_CONFIG")
+        elif patch:
+            # S199 T7 (parity audit FLAG 1A): every OTHER overridable key
+            # (NUM_PREDICT tiers, TTS_MAX_CHARS, ENDPOINT_*, SILENCE_*, ...)
+            # wrote JSON but never reached the live process until a restart --
+            # while UI hints claimed "no restart needed". RELOAD_OVERRIDES
+            # re-binds core.config's globals WITHOUT the full soundboard
+            # cache-clear + re-synth that RELOAD_CONFIG also triggers (a ~130
+            # line Kokoro re-synth per save is the S188 GPU-burst class).
+            send_teensy("RELOAD_OVERRIDES")
         return jsonify(ok=True)
     # Return all overridable defaults merged with current iris_config.json overrides
     # so web UI form fields always show the current effective value.
@@ -508,7 +647,8 @@ def api_gesture_stats():
 # Computed on request from the journal, NEVER logged (RD-031/RD-032 pattern).
 # The teensy bridge echoes the T4.1's "[DBG] Person Sensor ..." probe results and
 # FACE:1/FACE:0 tracking state as "[EYES] << ..." journal lines. This surfaces the
-# exact hardware condition behind RD-033 (no I2C ACK at 0x62 = sensor dead/loose)
+# exact hardware condition behind RD-033 (sensor not answering = dead/loose). S212:
+# the eyes sensor is a SEN0626 on UART; "no ACK at 0x62" is the I2C rollback wording.
 # plus live face-acquire/lost activity, so the operator can see sensor health on
 # the WebUI instead of reading the journal.
 _PS_FACE1_RE = re.compile(r'\bFACE:1\b')
@@ -530,7 +670,7 @@ def api_ps_status():
         raw = subprocess.check_output(
             ["bash", "-c",
              "journalctl -u assistant -n 6000 --no-pager --output=short-iso "
-             "| grep -E 'Person Sensor detected|no ACK at 0x62|No Person Sensor|FACE:[01]|PS_HEARTBEAT|Teensy connected on' "
+             "| grep -E 'Person Sensor detected|no ACK at 0x62|no UART reply|No Person Sensor|FACE:[01]|PS_HEARTBEAT|Teensy connected on' "
              "| tail -250"],
             text=True, stderr=subprocess.DEVNULL).splitlines()
     except Exception:
@@ -553,7 +693,13 @@ def api_ps_status():
         elif "Person Sensor detected" in line:
             last["detected"] = ts
             recent.append({"ts": ts_s, "kind": "detected", "msg": "Person Sensor detected"})
-        elif "no ACK at 0x62" in line or "No Person Sensor" in line:
+        # S212: match BOTH transports. "no ACK at 0x62" is the I2C Person Sensor
+        # (rollback build); "no UART reply" is the SEN0626. The firmware emits only
+        # one of the two depending on USE_SEN0626 in src/config.h — if this list
+        # ever drifts from src/main.cpp's strings, this card silently stops
+        # reporting ABSENT rather than erroring. Keep both sides in sync.
+        elif ("no ACK at 0x62" in line or "no UART reply" in line
+              or "No Person Sensor" in line):
             last["absent"] = ts
         elif _PS_FACE1_RE.search(line):
             last["face1"] = ts
@@ -578,8 +724,12 @@ def api_ps_status():
             state = "idle";     label = "PRESENT — sensor live, no face in view"
     elif absent_ts:
         state = "searching"
-        label = ("SEARCHING — no I2C ACK at 0x62 yet "
-                 "(cold-boot probe window, or loose/intermittent connector)")
+        # S212: transport-agnostic wording. Was hardcoded "no I2C ACK at 0x62",
+        # which is a lie on the SEN0626 (UART) build. Kept generic rather than
+        # firmware-sniffing, so it reads true on both this and the I2C rollback.
+        label = ("SEARCHING: sensor not answering yet "
+                 "(cold-boot probe window, loose or undervolted wiring, or on the "
+                 "SEN0626 an onboard DIP switch left in I2C mode)")
     elif last["link"]:
         # The serial link itself is confirmed (a recent open/reconnect), just no
         # PS-specific signal yet -- e.g. right after an assistant.service restart,
@@ -634,10 +784,29 @@ def api_restart():
 
 @app.route("/api/vram")
 def api_vram():
+    """Models resident in GandalfAI's GPU memory, each named with the BASE model
+    it is built from (WEBUI_TODEPLOY item 1, S244) -- a passthrough of ollama
+    /api/ps reports only the tag, which never says what is running. Also returns
+    the resolved adult/kids tags so the Ollama Models card on the same tab is
+    filled by this one call. Sizes here are real resident VRAM, not the logical
+    per-tag disk size, so they are safe to display."""
+    cat    = _ollama_catalog()
+    active = _ollama_active(cat)
     try:
         r = requests.get(f"http://{GANDALF}:{OLLAMA_PORT}/api/ps", timeout=5)
-        return jsonify(r.json())
-    except Exception as e: return jsonify(error=str(e)), 503
+        j = r.json()
+    except Exception as e:
+        return jsonify(error=str(e), active=active, reachable=(cat is not None)), 503
+    models = []
+    for m in (j.get("models") or []):
+        info = (cat or {}).get(m.get("name") or "") or {}
+        models.append({
+            "name": m.get("name"), "size": m.get("size"),
+            "size_vram": m.get("size_vram"), "context_length": m.get("context_length"),
+            "base": info.get("base"), "derived": info.get("derived"),
+            "params": info.get("params"), "quant": info.get("quant"),
+        })
+    return jsonify(models=models, active=active, reachable=(cat is not None))
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
@@ -647,16 +816,86 @@ def api_chat():
     mode  = data.get("mode", "adult")
     if not text: return jsonify(error="empty"), 400
     cfg   = read_cfg()
-    model = cfg.get("OLLAMA_MODEL_KIDS" if mode == "kids" else "OLLAMA_MODEL_ADULT", "iris")
+    # RD-047: the default MUST come from core.config, not the literal "iris".
+    # read_cfg() only sees iris_config.json, which carries no OLLAMA_MODEL_* keys,
+    # so mode="kids" silently fell back to the ADULT model -- the WebUI kids chat
+    # has never actually talked to iris-kids. assistant.get_model() reads the
+    # core.config values directly and was always correct.
+    from core.config import OLLAMA_MODEL_ADULT as _M_ADULT, OLLAMA_MODEL_KIDS as _M_KIDS
+    _key, _dflt = (("OLLAMA_MODEL_KIDS", _M_KIDS) if mode == "kids"
+                   else ("OLLAMA_MODEL_ADULT", _M_ADULT))
+    model = cfg.get(_key) or _dflt
+    # RD-064: a client-supplied transcript keeps this endpoint STATELESS (no
+    # per-session server state, so one test conversation never contaminates the
+    # next) and lets typed multi-turn chat carry history exactly like the voice
+    # path. Each item is {role: user|assistant, content: str}; malformed entries
+    # are dropped and the count is bounded (RD-031) -- the S226 budget trim inside
+    # build_messages caps tokens regardless.
+    _raw_hist = data.get("history") or []
+    history = []
+    if isinstance(_raw_hist, list):
+        for _m in _raw_hist[-40:]:
+            if (isinstance(_m, dict) and _m.get("role") in ("user", "assistant")
+                    and isinstance(_m.get("content"), str) and _m["content"].strip()):
+                history.append({"role": _m["role"], "content": _m["content"]})
     try:
-        import datetime as _dt
-        _now = _dt.datetime.now()
-        _sys = f"Current date and time: {_now.strftime('%A, %B %d %Y, %I:%M %p')} Mountain Time."
-        r = requests.post(f"http://{GANDALF}:{OLLAMA_PORT}/api/generate",
-            json={"model": model, "prompt": text, "system": _sys, "stream": False},
+        # RD-064: compose through the SAME core.prompt pipeline the voice path
+        # uses, so a TYPED question gets the same date stamp, kids notebook,
+        # personality tuning, episodic recall (lookup + S224d miss clause) and
+        # S226 budget the SPOKEN question gets. Before RD-064 this route hand-rolled
+        # a date+tuning-only /api/generate prompt with no history and no recall, so
+        # a memory-shaped question typed here made her invent (the RD-060 / S224d
+        # confabulation class) while the identical spoken question stayed honest.
+        import core.config as _cc
+        # Re-read iris_config.json into this process's core.config so a just-saved
+        # slider or RECALL_* flag is live for typed chat without an iris-web restart
+        # -- the freshness the old read_cfg() path had, now covering tuning AND
+        # recall. Bounded: one manual chat send per call (human-paced), and fully
+        # guarded (reload_overrides never raises out).
+        try:
+            _cc.reload_overrides()
+        except Exception:
+            pass
+        # The SAME recall lookup assistant._recall_prepare runs: it honors
+        # RECALL_ENABLED and returns "" / a memory clause / the honest _NO_MEMORY
+        # miss clause. Read-only against the GandalfAI /search service -- it never
+        # writes the corpus, so this does not touch RD-063's ledger.
+        _recall_cl = ""
+        try:
+            from core import recall as _recall
+            _recall_cl = _recall.prepare(text)
+        except Exception as _re:
+            print(f"[RECALL] webui lookup skipped: {_re}", flush=True)
+        # RD-068: the same weather lookup the router runs on the voice path. The
+        # typed path has no intent router, so it calls services.weather directly
+        # -- exactly the way it calls core.recall directly above. Without this the
+        # WebUI chat would still be the confabulating one, which is the RD-064
+        # divergence all over again. Detection and fetch are both inside
+        # clause_for(); it returns "" for a non-weather question, so a typed
+        # "hello" costs one regex and no network.
+        _weather_cl = ""
+        try:
+            from services import weather as _weather
+            _weather_cl = _weather.clause_for(text)
+        except Exception as _we:
+            print(f"[WX]   webui lookup skipped: {_we}", flush=True)
+        from core import prompt as _prompt
+        # No tier router on the typed path: use the conversational MEDIUM budget so
+        # the trim and the reply cap match a normal spoken turn.
+        _np = int(getattr(_cc, "NUM_PREDICT_MEDIUM", 224))
+        messages = _prompt.build_messages(
+            text, history, "kids" if mode == "kids" else "adult",
+            recall_clause=_recall_cl, weather_clause=_weather_cl, num_predict=_np)
+        # /api/chat (messages list), NOT /api/generate (flat prompt): the same
+        # transport the voice path uses (services.llm.stream_ollama), non-streaming
+        # here. The persona still comes from the modelfile SYSTEM -- no role:system
+        # message is ever sent (S134), the guarantee build_messages enforces.
+        r = requests.post(f"http://{GANDALF}:{OLLAMA_PORT}/api/chat",
+            json={"model": model, "messages": messages, "stream": False,
+                  "keep_alive": "8h", "options": {"num_predict": _np}},
             timeout=90)
         r.raise_for_status()
-        raw_reply = r.json().get("response", "").strip()
+        raw_reply = (r.json().get("message") or {}).get("content", "").strip()
         from services.llm import extract_emotion_from_reply, clean_llm_reply
         emotion, clean_reply = extract_emotion_from_reply(raw_reply)
         clean_reply = clean_llm_reply(clean_reply)
@@ -1000,7 +1239,9 @@ def api_gesture_config():
         raw_map = data.get("GESTURE_MAP", {})
         cleaned = {k: v for k, v in raw_map.items() if v in _VALID_GESTURE_ACTIONS}
         threshold = max(0, min(255, int(data.get("GESTURE_PROXIMITY_THRESHOLD", 150))))
-        write_cfg({"GESTURE_MAP": cleaned, "GESTURE_PROXIMITY_THRESHOLD": threshold})
+        enabled = bool(data.get("GESTURE_ENABLED", True))
+        write_cfg({"GESTURE_MAP": cleaned, "GESTURE_PROXIMITY_THRESHOLD": threshold,
+                   "GESTURE_ENABLED": enabled})
         return jsonify(ok=True)
     cfg = read_cfg()
     stored = cfg.get("GESTURE_MAP", {})
@@ -1009,6 +1250,99 @@ def api_gesture_config():
     return jsonify(
         GESTURE_MAP=merged,
         GESTURE_PROXIMITY_THRESHOLD=cfg.get("GESTURE_PROXIMITY_THRESHOLD", 150),
+        GESTURE_ENABLED=cfg.get("GESTURE_ENABLED", True),
+    )
+
+
+@app.route("/api/kids_mode", methods=["GET", "POST"])
+def api_kids_mode():
+    """RD-047. Kids mode was voice-entry only ("kids mode on"), which meant an
+    adult had to say a magic phrase before every session and it silently reverted
+    after KIDS_MODE_INACTIVITY_TIMEOUT. GET reports the LIVE mode from the flag
+    file assistant.py maintains, so the toggle tells the truth even after the
+    inactivity watchdog or a voice command flips it."""
+    if request.method == "POST":
+        data = request.get_json(force=True) or {}
+        on = bool(data.get("enabled"))
+        ok = send_teensy("KIDS:ON" if on else "KIDS:OFF")
+        return jsonify(ok=ok, enabled=on)
+    return jsonify(enabled=os.path.exists("/tmp/iris_kids_mode"))
+
+
+@app.route("/api/kids_profile", methods=["GET", "POST"])
+def api_kids_profile():
+    """RD-047. The children's names/ages/interests -- literally the "little
+    notebook Dad keeps" that the iris-kids persona describes. Saved through
+    core/kids_profile.py (validate + atomic dual-write RAM+SD + goldbak), then a
+    UDP RELOAD_KIDS_PROFILE makes the next kids turn use it. No restart."""
+    from core import kids_profile
+    if request.method == "POST":
+        data = request.get_json(force=True) or {}
+        children = data.get("children")
+        if not isinstance(children, list):
+            return jsonify(ok=False, error="children must be a list"), 400
+        try:
+            res = kids_profile.save({"children": children})
+        except Exception as e:
+            return jsonify(ok=False, error=str(e)), 500
+        send_teensy("RELOAD_KIDS_PROFILE")
+        return jsonify(ok=True, sd=res.get("sd"), version=res.get("version"),
+                       children=kids_profile.get_children())
+    return jsonify(children=kids_profile.get_children())
+
+
+# NOTE: mirrors hardware/audio_io.py _DEFAULT_BARGEIN_GRAMMAR. Web display default
+# only; live behavior is BARGEIN_GRAMMAR in iris_config.json.
+_DEFAULT_BARGEIN_GRAMMAR = {
+    "stop": "STOP", "cancel": "STOP", "be quiet": "STOP", "shut up": "STOP",
+    "stop talking": "STOP", "pause": "STOP",
+    "louder": "VOL+", "volume up": "VOL+",
+    "quieter": "VOL-", "volume down": "VOL-",
+}
+_VALID_BARGEIN_ACTIONS = {"STOP", "VOL+", "VOL-", "SKIP"}
+_VALID_BARGEIN_ENGINES = {"vosk", "whisper", "off"}
+
+
+@app.route("/api/bargein_config", methods=["GET", "POST"])
+def api_bargein_config():
+    """Mid-playback spoken-command config. Grammar = phrase -> action, forms the
+    Vosk grammar in hardware/audio_io.py. SKIP-mapped phrases are dropped (not in
+    the grammar). Phrases must be common English (Vosk small-model lexicon)."""
+    if request.method == "POST":
+        data = request.get_json(force=True)
+        raw_map = data.get("BARGEIN_GRAMMAR", {})
+        cleaned = {str(k).lower().strip(): v for k, v in raw_map.items()
+                   if v in _VALID_BARGEIN_ACTIONS and v != "SKIP" and str(k).strip()}
+        engine = str(data.get("BARGEIN_ENGINE", "vosk")).lower()
+        if engine not in _VALID_BARGEIN_ENGINES:
+            engine = "vosk"
+        enabled = bool(data.get("BARGEIN_ENABLED", True))
+        patch = {"BARGEIN_GRAMMAR": cleaned, "BARGEIN_ENGINE": engine,
+                 "BARGEIN_ENABLED": enabled}
+        # S199 T3/T7: kids barge-in guard numerics (read live per playback by
+        # hardware/audio_io._load_bargein_config; clamped here).
+        try:
+            # S222: the ADULT multiplier was readable by audio_io but writable
+            # by nothing -- no route, not in _OVERRIDABLE -- so the S203 lever
+            # for her cutting herself off could only be changed by hand-editing
+            # the protected config file. Same clamp as the kids twin.
+            patch["BARGEIN_DETECT_MULT"] = min(5.0, max(1.0, float(data.get("BARGEIN_DETECT_MULT", 1.5))))
+            patch["KIDS_BARGEIN_DETECT_MULT"] = min(10.0, max(1.0, float(data.get("KIDS_BARGEIN_DETECT_MULT", 2.0))))
+            patch["KIDS_BARGEIN_GUARD_MS"] = min(5000, max(0, int(data.get("KIDS_BARGEIN_GUARD_MS", 800))))
+        except (TypeError, ValueError):
+            pass
+        write_cfg(patch)
+        return jsonify(ok=True)
+    cfg = read_cfg()
+    stored = cfg.get("BARGEIN_GRAMMAR")
+    grammar = stored if isinstance(stored, dict) and stored else dict(_DEFAULT_BARGEIN_GRAMMAR)
+    return jsonify(
+        BARGEIN_GRAMMAR=grammar,
+        BARGEIN_ENGINE=cfg.get("BARGEIN_ENGINE", "vosk"),
+        BARGEIN_ENABLED=cfg.get("BARGEIN_ENABLED", True),
+        BARGEIN_DETECT_MULT=cfg.get("BARGEIN_DETECT_MULT", 1.5),
+        KIDS_BARGEIN_DETECT_MULT=cfg.get("KIDS_BARGEIN_DETECT_MULT", 2.0),
+        KIDS_BARGEIN_GUARD_MS=cfg.get("KIDS_BARGEIN_GUARD_MS", 800),
     )
 
 
@@ -1059,8 +1393,8 @@ def api_rebuild_model():
         return jsonify(ok=False, error=f"Secrets file error: {e}"), 500
 
     model_files = {
-        "iris":      r"C:\IRIS\IRIS-Robot-Face\ollama\iris_modelfile.txt",
-        "iris-kids": r"C:\IRIS\IRIS-Robot-Face\ollama\iris-kids_modelfile.txt",
+        "iris":      r"C:\GPU_BOX\IRIS-Robot-Face\ollama\iris_modelfile.txt",
+        "iris-kids": r"C:\GPU_BOX\IRIS-Robot-Face\ollama\iris-kids_modelfile.txt",
     }
     targets = ["iris", "iris-kids"] if target == "both" else [target]
     outputs = []
@@ -1070,7 +1404,7 @@ def api_rebuild_model():
             result = subprocess.run(
                 ["sshpass", "-p", ssh_pass, "ssh",
                  "-o", "StrictHostKeyChecking=no",
-                 f"{ssh_user}@192.168.1.3", cmd],
+                 f"{ssh_user}@192.168.0.20", cmd],
                 capture_output=True, text=True, timeout=120
             )
             outputs.append(f"=== {t} ===\n{result.stdout}{result.stderr}".strip())
@@ -1084,11 +1418,21 @@ def api_rebuild_model():
     return jsonify(ok=True, output="\n\n".join(outputs))
 
 
-_VALID_EMOTIONS_SET = {"NEUTRAL","HAPPY","CURIOUS","ANGRY","SLEEPY","SURPRISED","SAD","CONFUSED","AMUSED"}
-_DEFAULT_MOUTH_MAP  = {"NEUTRAL":0,"HAPPY":1,"CURIOUS":2,"ANGRY":3,"SLEEPY":4,
-                        "SURPRISED":5,"SAD":6,"CONFUSED":7,"AMUSED":2}
-_MOUTH_COUNT = 10   # indices 0-9 (0-8 original + 9=SILLY)
-_EYE_COUNT   = 8    # indices 0-7
+# S242: these were three hand-maintained literals and ALL THREE had gone stale
+# against S241, which widened the emotion set to 11 and the eye library to 25 but
+# only updated the CLIENT (iris_web.js _EMOTION_NAMES / _EYE_NAMES). The result was
+# a silent write-drop, the worst shape of this bug: the browser rendered ANNOYED and
+# EXASPERATED rows and a 25-entry eye dropdown, the operator set them, hit Save, and
+# the POST handler below discarded every one of them because `k in _VALID_EMOTIONS_SET`
+# was False and `iv < _EYE_COUNT` was False. No error, no log, the row just reverted
+# on the next Reload. Importing from core.config instead of restating the values
+# deletes the drift class rather than patching this instance of it -- core.config is
+# already imported at module scope here, so this costs nothing.
+from core.config import (VALID_EMOTIONS as _VALID_EMOTIONS_SET,
+                         MOUTH_MAP as _DEFAULT_MOUTH_MAP,
+                         EYE_IDX_MAX as _EYE_IDX_MAX)
+_MOUTH_COUNT = 10                 # indices 0-9 (0-8 original + 9=SILLY)
+_EYE_COUNT   = _EYE_IDX_MAX + 1   # 25 -- eyeDefinitions rows in src/config.h
 
 @app.route("/api/emotion_map", methods=["GET","POST"])
 def api_emotion_map():
@@ -1131,7 +1475,17 @@ def api_emotion_map():
 # Pi4 reboot.
 PS_CONFIG_FILE   = "/home/pi/ps_config.json"
 SD_PS_CONFIG     = "/media/root-ro/home/pi/ps_config.json"
-_PS_CFG_DEFAULTS = {"CONF": 60, "FACING": 1, "LOST_MS": 5000, "Y_BIAS": 0.0, "LED": 0}
+# S212c: X_GAIN / Y_GAIN / X_BIAS shape the gaze mapping (targetN = rawN * gain + bias).
+# The gain SIGN is direction and its MAGNITUDE is range, so one knob covers both
+# "it tracks mirrored" and "it barely moves".
+# X_GAIN=+1.0 here is the SEN0626 convention (the fitted sensor). The Person Sensor
+# uses the opposite sign: if the firmware is ever rolled back to USE_PERSON_SENSOR_I2C,
+# set X_GAIN=-1.0 here and in ps_config.json, or the eyes will track mirrored. The
+# firmware bakes the correct per-transport default for autonomous power-up, but these
+# Pi4 values are pushed on every boot/reconnect and WIN once pushed (same override
+# relationship as CONF/FACING/LED -- see the S153c/S185 notes in src/main.cpp).
+_PS_CFG_DEFAULTS = {"CONF": 60, "FACING": 1, "LOST_MS": 5000, "Y_BIAS": 0.0, "LED": 0,
+                    "X_GAIN": 1.0, "Y_GAIN": 1.0, "X_BIAS": 0.0}
 
 def _read_ps_cfg():
     cfg = dict(_PS_CFG_DEFAULTS)
@@ -1187,6 +1541,12 @@ def api_ps_config():
         cfg["LOST_MS"] = max(0, int(float(cfg["LOST_MS"])))
         cfg["Y_BIAS"]  = round(float(cfg["Y_BIAS"]), 3)
         cfg["LED"]     = 1 if int(float(cfg["LED"])) else 0
+        # S212c gaze shaping. Gains are SIGNED (sign = direction) so they must not be
+        # clamped to >= 0. Bounded to +-5 to keep a fat-fingered value from pinning the
+        # eyes at full deflection; EyeController normalises to the unit circle anyway.
+        cfg["X_GAIN"]  = round(max(-5.0, min(5.0, float(cfg["X_GAIN"]))), 3)
+        cfg["Y_GAIN"]  = round(max(-5.0, min(5.0, float(cfg["Y_GAIN"]))), 3)
+        cfg["X_BIAS"]  = round(max(-1.0, min(1.0, float(cfg["X_BIAS"]))), 3)
     except (ValueError, TypeError) as e:
         return jsonify(ok=False, error=f"bad value: {e}"), 400
     try:

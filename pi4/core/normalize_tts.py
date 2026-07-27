@@ -37,6 +37,21 @@ _FRACTIONS = {
     (1, 4): "one quarter", (3, 4): "three quarters",
 }
 
+# ── Pronunciation respells (RD-047) ───────────────────────────────────────────
+# Kokoro is grapheme-driven and mangles some proper names -- a short name can come
+# out with a stretched vowel instead of the intended one. Map bad graphemes to graphemes Kokoro renders
+# correctly. Word-boundary, case-insensitive match; replacement used verbatim.
+# Data-driven: add a name = add a line. Runs FIRST in normalize_for_tts() so
+# every speech path (main turn, quips, error-voice regen) is covered.
+_PRONUNCIATIONS = {
+    # e.g.  "Aoife": "Eefa",   # add any name Kokoro mispronounces
+}
+
+_PRONUNCIATION_RES = [
+    (re.compile(r'\b' + re.escape(k) + r'\b', re.IGNORECASE), v)
+    for k, v in _PRONUNCIATIONS.items()
+]
+
 
 def _int_to_words(n: int) -> str:
     if n < 0:
@@ -131,6 +146,11 @@ def normalize_for_tts(text: str) -> str:
     quotes) is left for services.tts._clean_tts_text's `[^\\x00-\\x7F]` strip -- so
     this function does not guarantee fully ASCII output for arbitrary input.
     """
+    # 0a. Pronunciation respells (RD-047) -- proper names Kokoro mangles. First,
+    #     before any numeric rule, so names are fixed on every speech path.
+    for rx, repl in _PRONUNCIATION_RES:
+        text = rx.sub(repl, text)
+
     # 0. Unicode ellipsis (…, U+2026) -> ASCII "..." BEFORE the downstream non-ASCII
     #    strip would delete it. Live S194 bench: "..." is Kokoro's longest pause cue,
     #    so the glyph must survive as ASCII dots or the pause is silently lost.

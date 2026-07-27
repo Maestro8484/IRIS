@@ -214,13 +214,18 @@ def spoken_numbers(text: str) -> str:
 
 # ── TTS input truncation ─────────────────────────────────────────────────────
 
-def _truncate_for_tts(text: str, max_chars: int = TTS_MAX_CHARS) -> str:
+def _truncate_for_tts(text: str, max_chars: int | None = None) -> str:
     """
     Cap TTS input at max_chars to bound Chatterbox generation time.
     Truncates at the last sentence boundary (. ? !) before max_chars.
     If no boundary found, returns text untruncated to avoid mid-word cut.
     Default is TTS_MAX_CHARS from config (overridable via iris_config.json).
+    Resolved per call, not as a default-arg baked at def time -- that froze the
+    value at import and a RELOAD_CONFIG never reached it (RD-047 follow-up).
     """
+    if max_chars is None:
+        import core.config as _cfg
+        max_chars = _cfg.TTS_MAX_CHARS
     if len(text) <= max_chars:
         return text
     window = text[:max_chars]
@@ -261,12 +266,15 @@ def synthesize(text: str, speed: float | None = None) -> bytes:
     Optional speed overrides KOKORO_SPEED (used by quip cache for faster wakeword responses)."""
     text = _clean_tts_text(text)
 
-    if F5_ENABLED:
+    # Engine gates read live: the module-level import froze them, so toggling
+    # F5/Kokoro from the WebUI needed a restart (RD-047 follow-up).
+    import core.config as _cfg
+    if _cfg.F5_ENABLED:
         try:
             return _synthesize_f5(text, speed=speed)
         except Exception as e:
             print(f"[F5]   Failed: {e} -- falling back to Kokoro", flush=True)
-    if KOKORO_ENABLED:
+    if _cfg.KOKORO_ENABLED:
         try:
             return _synthesize_kokoro(text, speed=speed)
         except Exception as e:
@@ -282,8 +290,9 @@ def synthesize_captioned(text: str, speed: float | None = None):
     caller falls back to the legacy fixed-timer mouth animation. PCM is always
     returned so the turn never goes silent on a timing failure."""
     cleaned = _clean_tts_text(text)
+    import core.config as _cfg          # live engine gates (RD-047 follow-up)
     # Word timing only exists on the Kokoro captioned endpoint. F5/Piper have none.
-    if not F5_ENABLED and KOKORO_ENABLED:
+    if not _cfg.F5_ENABLED and _cfg.KOKORO_ENABLED:
         try:
             pcm, words = _synthesize_kokoro_captioned(cleaned, speed=speed)
             timeline = build_mouth_timeline(words)

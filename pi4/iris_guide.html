@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IRIS: Demo &amp; Interaction Guide</title>
+<style>
+  :root{
+    --ink:#1a1c20; --mut:#5a6572; --line:#d4d9e0; --bg:#ffffff; --soft:#f4f6f9;
+    --acc:#0d6ec9; --acc2:#8a4fd0; --warn:#b06a00; --warnbg:#fff4e0; --okbg:#e8f5ea;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:13px/1.42 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:960px;margin:0 auto;padding:14px 20px 34px}
+  h1{font-size:22px;margin:0 0 2px}
+  h2{font-size:16px;margin:20px 0 6px;padding:4px 8px;background:var(--acc);color:#fff;border-radius:4px}
+  h3{font-size:13.5px;margin:12px 0 3px;color:var(--acc2)}
+  p{margin:5px 0}
+  ul,ol{margin:5px 0 5px 18px;padding:0}
+  li{margin:2px 0}
+  .sub{color:var(--mut);font-size:11.5px;margin:0 0 8px}
+  .lede{background:var(--soft);border-left:3px solid var(--acc);padding:7px 11px;border-radius:0 4px 4px 0;margin:8px 0}
+  code{background:var(--soft);border:1px solid var(--line);border-radius:3px;padding:0 3px;font-size:11.5px}
+  em.q{color:#2a5d2a}
+  table{width:100%;border-collapse:collapse;margin:6px 0;font-size:12px}
+  th,td{border:1px solid var(--line);padding:3px 6px;text-align:left;vertical-align:top}
+  th{background:var(--soft);font-weight:600}
+  td.k{white-space:nowrap;font-weight:600}
+  .sw{display:inline-block;width:11px;height:11px;border-radius:50%;border:1px solid #0003;margin-right:5px;vertical-align:-1px}
+  .cols{column-count:2;column-gap:20px}
+  .cols>*{break-inside:avoid}
+  .note{background:var(--warnbg);border:1px solid #e6c58a;border-radius:5px;padding:8px 11px;margin:8px 0}
+  .ok{background:var(--okbg);border-left:3px solid #3a9d54;padding:6px 10px;border-radius:0 4px 4px 0;margin:6px 0}
+  .scene th{background:#eef3fb}
+  .scene td:first-child{white-space:nowrap;font-weight:600;color:var(--acc)}
+  .foot{color:var(--mut);font-size:11px;margin-top:18px;border-top:1px solid var(--line);padding-top:8px}
+  @media print{ .wrap{max-width:none;padding:0 6mm} h2{-webkit-print-color-adjust:exact} section{break-inside:avoid} }
+  @media (max-width:640px){ .cols{column-count:1} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>IRIS: Demo &amp; Interaction Guide</h1>
+  <p class="sub">How you interact with IRIS · how IRIS interacts with you · a shot-by-shot demo script. Adult mode default; Kids Mode is a separate critical section. Reflects the <strong>S203 deployed state (2026-07-12)</strong>.</p>
+
+  <div class="lede"><strong>IRIS is a personality that happens to use voice and AI</strong>, not a voice assistant that happens to have a face. Everything here exists to make a string of tokens feel like someone in the room. This page is the printable twin of <code>docs/IRIS_DEMO_AND_INTERACTION_GUIDE.md</code>.</div>
+
+  <!-- ─────────────── PART A ─────────────── -->
+  <section>
+  <h2>A · Feature Outline</h2>
+  <ol>
+    <li><strong>Presence &amp; personality:</strong> one consistent character (dry, quick, British-register wit) that never switches off based on how you talk to her. Two brains: <strong>adult</strong> (default) and <strong>kids</strong>.</li>
+    <li><strong>Conversation loop:</strong> say her name → instant quip while she spins up → you talk → she thinks → she speaks → she keeps listening briefly so you reply <em>without</em> the wake word.</li>
+    <li><strong>The face (her namesake):</strong> twin round eye displays that <strong>track your face in real time</strong>, a lip-synced mouth, a head that pans to follow you. Nine emotions, each firing a matched eye + mouth + light.</li>
+    <li><strong>Status lights:</strong> three APA102 LEDs showing her exact state at a glance.</li>
+    <li><strong>Hands-free &amp; interrupt:</strong> a touchless gesture sensor and <strong>barge-in</strong> (talk over her; "stop/louder/quieter" caught offline in ~0.2 s).</li>
+    <li><strong>Vision &amp; camera games:</strong> she can look, describe a scene, name who's there, read text aloud, and play I Spy / Show Me / Make a Face.</li>
+    <li><strong>Modes &amp; rest:</strong> adult ↔ kids swap; scheduled sleep (9 PM → 7 AM); a voice "quiet break" do-not-disturb window.</li>
+    <li><strong>Control Panel:</strong> one browser page, ~15 tabs, no app; edits apply live, one button persists to SD. (Has its own automated tour, see below.)</li>
+    <li><strong>Under the hood, local-first:</strong> Pi4 + two Teensys + GandalfAI GPU (sleeps when idle, woken on your first wake word) + Person Sensor. <strong>Nothing leaves the house.</strong></li>
+  </ol>
+  <div class="ok"><strong>Companion:</strong> <code>scripts/walkthrough/</code> already renders an IRIS-narrated screen tour of the Control Panel (<code>out/walkthrough.mp4</code>), which answers "what are all the knobs." This guide answers "what is she like in the room." They sit side by side.</div>
+  </section>
+
+  <!-- ─────────────── PART B1 ─────────────── -->
+  <section>
+  <h2>B1 · Prompts: the personas ("how IRIS interacts with you")</h2>
+  <p>Her character is not code; it is a <strong>prompt</strong>. Both brains run the same model (<code>mistral-small3.2:24b</code>) with the same sampling, differing only in the SYSTEM prompt. The rule is <strong>inclusive, not prohibitive</strong>: the prompt says what IRIS <em>is</em> and lets the model fill it in, rather than listing forbidden behaviours.</p>
+  <div class="cols">
+    <ul>
+      <li><strong>A presence, not a service.</strong> Confident, dry, useful; processes every input through the same lens: hers. Calibrated to be honest, not comfortable.</li>
+      <li><strong>Speaks for the ear.</strong> Plain words, no markdown. <strong>Length matched to the ask</strong>: yes/no → 1 sentence; factual → 1–2; opinion → 2–4; deep → up to 6. No preamble, no "hope that helps."</li>
+      <li><strong>Dry economy, British-voiced.</strong> She teases rather than cuts: light ribbing that leaves the door open. Voice/register deliberately British (the TTS is a British female blend), so a few words like <em>brilliant / rubbish / proper</em> land naturally; never costume-drama. Deadpan; ellipsis pauses as seasoning.</li>
+      <li><strong>Play under all of it.</strong> The jab is a volley, not a verdict: it leaves the door open. <strong>Never punches down.</strong></li>
+      <li><strong>Comfortable under fire.</strong> Called an AI / told she's wrong → answers from self-comfort, not defensiveness.</li>
+      <li><strong>Depth:</strong> home-automation, AI/ML, electronics, maker, math (right answer first, wit after), mental-health (human tone, no clinical framing).</li>
+      <li><strong>Every reply opens with an <code>[EMOTION:…]</code> tag</strong> that drives the face + lights.</li>
+    </ul>
+  </div>
+  <div class="ok"><strong>The contract (how she should treat you):</strong> lead with the answer; carry a real mood; match length; keep character constant regardless of tone; hand the turn back when she has a genuine question; <strong>never</strong> service-desk filler ("certainly", "great question", "happy to help"), never explain herself as software, never punch down. Sampling both brains: <code>temp 0.75 · top_p 0.9 · repeat_penalty 1.1</code>.</div>
+  </section>
+
+  <!-- ─────────────── PART B2 ─────────────── -->
+  <section>
+  <h2>B2 · Quips: the soundboard</h2>
+  <p>Pre-written lines she fires <strong>instantly, often before the LLM has even woken up</strong>, so she's never silent. Data-driven (<code>core/soundboard.py</code>), fully editable / toggleable / previewable from the WebUI <strong>Soundboard</strong> tab; reloaded live, no restart.</p>
+  <table>
+    <tr><th>Library</th><th>What it is</th><th>Fires…</th></tr>
+    <tr><td class="k">Quips</td><td>Banks of improvised one-liners by category</td><td>On events (wake, sleep, kids turn, thinking gaps)</td></tr>
+    <tr><td class="k">Clips</td><td>Pre-baked spoken clips bound to a trigger phrase + emotion</td><td>On a matched phrase, <em>before</em> the LLM runs</td></tr>
+  </table>
+  <p style="margin-bottom:2px">Representative real lines (verbatim from the seed):</p>
+  <ul>
+    <li><strong>Wake band:</strong> <em class="q">"Right then. What?"</em> · <em class="q">"You're awake. Bold choice."</em></li>
+    <li><strong>Clips:</strong> <em class="q">"Yes, I'm here. Tragically."</em> · <em class="q">"I'm back. You may now resume having problems."</em> · <em class="q">"I was resting. You've ended that."</em></li>
+    <li><strong>Kids wake</strong> (CURIOUS, gentler): <em class="q">"Right, I'm awake. What's the plan?"</em> &nbsp;·&nbsp; <strong>Kids fillers:</strong> two-stage lines that fill the think-pause so there's never scary silence.</li>
+    <li><strong>Jokes:</strong> on "tell me a joke" she insults you first, then one from a rotating 20-joke list, never explained: <em class="q">"You're asking the robot for entertainment. Peak comedy… What do you call a fish with no eyes? A fsh."</em></li>
+    <li><strong>Adversarial:</strong> "You're just an AI." → <em class="q">"And you're just a carbon-based pattern-matcher. We both have our limitations."</em></li>
+  </ul>
+  </section>
+
+  <!-- ─────────────── PART B3 ─────────────── -->
+  <section>
+  <h2>B3 · Status indicators: the APA102 lights &amp; emotion faces</h2>
+  <p>Three APA102 LEDs report her state as soft breathing colours you read across the room. Ground truth: <code>hardware/led.py</code>.</p>
+
+  <h3>State lights: what she's doing</h3>
+  <table>
+    <tr><th style="width:44%">Light</th><th>Meaning</th></tr>
+    <tr><td><span class="sw" style="background:#38c0c0"></span>Cyan: slow breathe</td><td>Idle / ready (<strong>adult</strong> mode)</td></tr>
+    <tr><td><span class="sw" style="background:#e0c020"></span>Yellow: slow breathe</td><td>Idle / ready (<strong>kids</strong> mode)</td></tr>
+    <tr><td><span class="sw" style="background:#e02020"></span>Solid red</td><td>Listening: recording your voice</td></tr>
+    <tr><td><span class="sw" style="background:#2040e0"></span>Blue dot circling the ring</td><td>Thinking: STT / LLM / vision in progress</td></tr>
+    <tr><td><span class="sw" style="background:#20c020"></span>Solid green</td><td>Speaking: IRIS is talking</td></tr>
+    <tr><td><span class="sw" style="background:#d020d0"></span>Magenta: fast shimmer</td><td>Waiting for your follow-up (no wake word needed)</td></tr>
+    <tr><td><span class="sw" style="background:#f0f0f0"></span>Brief white</td><td>Wake word just heard</td></tr>
+    <tr><td><span class="sw" style="background:#e0a020"></span>Amber: steady</td><td>Push-to-talk button pressed</td></tr>
+    <tr><td><span class="sw" style="background:#e07010"></span>Orange: breathe</td><td>Waking the AI workstation (GandalfAI) over the network</td></tr>
+    <tr><td><span class="sw" style="background:#e02020"></span>Red: rapid blink ×6</td><td>Error</td></tr>
+    <tr><td><span class="sw" style="background:#e0c020"></span>3× yellow blink</td><td>Kids mode just turned <strong>ON</strong></td></tr>
+    <tr><td><span class="sw" style="background:#38c0c0"></span>3× cyan blink</td><td>Kids mode just turned <strong>OFF</strong></td></tr>
+    <tr><td><span class="sw" style="background:#4a38b0"></span>Very dim indigo: slow breathe (~8 s)</td><td>Asleep (scheduled sleep)</td></tr>
+    <tr><td><span class="sw" style="background:#c08010"></span>Amber: slow dim breathe (~6 s)</td><td><strong>Quiet break</strong> / do-not-disturb window active</td></tr>
+    <tr><td><span class="sw" style="background:#e03030"></span>Red: brisk bright pulse (~1 s)</td><td>"Answer now": resume yes/no window after a break</td></tr>
+  </table>
+  <p style="font-size:11.5px;color:var(--mut)">Three resting states use distinct hues on purpose: <strong>indigo</strong>=scheduled sleep, <strong>amber</strong>=quiet break, <strong>red pulse</strong>=waiting for your yes/no.</p>
+
+  <h3>Emotion lights: what she's feeling (the tripartite affect loop)</h3>
+  <p>During a reply the LEDs stop reporting state and <strong>breathe in the current emotion's colour</strong>. The <code>[EMOTION:…]</code> tag opening every reply fires eyes + mouth + voice + light on the same beat. The nine valid tags:</p>
+  <table>
+    <tr><th>Tag</th><th>Eyes</th><th>Mouth</th><th>LED breathe</th></tr>
+    <tr><td class="k"><span class="sw" style="background:#38c0c0"></span>NEUTRAL</td><td>nordicBlue: steady, present</td><td>calm resting</td><td>soft cyan, ~4 s</td></tr>
+    <tr><td class="k"><span class="sw" style="background:#e0b020"></span>HAPPY</td><td>bigBlue: wide, bright</td><td>upward grin</td><td>warm yellow, ~3 s</td></tr>
+    <tr><td class="k"><span class="sw" style="background:#20d0d0"></span>CURIOUS</td><td>bigBlue: open, engaged</td><td>interested / active</td><td>bright cyan, ~3.5 s</td></tr>
+    <tr><td class="k"><span class="sw" style="background:#ffa000"></span>AMUSED</td><td>hazel: playful lid droop</td><td>smirk, asymmetric</td><td><strong>amber</strong>, quick sinusoid, ~1.5 s</td></tr>
+    <tr><td class="k"><span class="sw" style="background:#e02020"></span>ANGRY</td><td>fire: narrowed, warm sclera</td><td>tight compressed jaw</td><td>red, fast ~2 s</td></tr>
+    <tr><td class="k"><span class="sw" style="background:#e8e8e8"></span>SURPRISED</td><td>wide, rapid</td><td>active</td><td><strong>white flash → cyan</strong></td></tr>
+    <tr><td class="k"><span class="sw" style="background:#3040b0"></span>SAD</td><td>nordicBlue: drooped, slow blink</td><td>downward curve</td><td>dim blue, ~6 s</td></tr>
+    <tr><td class="k"><span class="sw" style="background:#b020b0"></span>CONFUSED</td><td>uncertain, shifting</td><td>uneven</td><td>pulsing magenta, ~2.5 s</td></tr>
+    <tr><td class="k"><span class="sw" style="background:#6030a0"></span>SLEEPY</td><td>heavy, droopy lids</td><td>slack</td><td>dim purple, ~6 s slow</td></tr>
+  </table>
+  <p style="font-size:11.5px;color:var(--mut)"><strong>Gesture confirmations</strong> flash a transient colour: swipe-up = green sweep, swipe-down = red sweep, mute-twist = magenta blink, stop = white flash, listen = blue, wake = cyan. <strong>Eye types:</strong> nordicBlue (calm), hazel (warm/playful), bigBlue (curious/happy), fire (assertive); 7 hand-drawn styles ship in total.</p>
+  </section>
+
+  <!-- ─────────────── PART C ─────────────── -->
+  <section>
+  <h2>C · Demo Video Script (adult mode)</h2>
+  <p>~2 minutes, showing both directions at once: the presenter's actions (how you interact) and IRIS's face/voice/lights (how she interacts). Every scene makes the <em>interaction contract</em> visible rather than narrating it.</p>
+  <p><strong>Pre-flight:</strong> pre-wake GandalfAI (LEDs orange while waking) so the first demo reply is snappy · confirm idle cyan breathe + eyes tracking your face · frame both eye displays, the mouth, and the LED strip in one shot · quiet room, one presenter; speak, then <strong>stop</strong> and let her lead.</p>
+  <table class="scene">
+    <tr><th>Scene</th><th>You do / say</th><th>IRIS does (face · voice · lights)</th><th>Caption</th></tr>
+    <tr><td>Cold open</td><td>Walk up, look at her: <em>"Hey Iris."</em></td><td>Brief <strong>white</strong> flash → instant quip <em class="q">"Right then. What?"</em> → eyes snap and <strong>lock onto your face</strong>.</td><td>"Say 'Hey Iris.' She's already looking at you."</td></tr>
+    <tr><td>1 · Exchange</td><td><em>"What's the capital of Australia?"</em></td><td>Blue dot (thinking) → green (speaking), lip-synced: <em class="q">"Canberra. Everyone guesses Sydney."</em> Then stops.</td><td>"Answers first. Personality second. Then she stops."</td></tr>
+    <tr><td>2 · Follow-up</td><td>Without a wake word: <em>"Why does everyone guess Sydney?"</em></td><td>LEDs already <strong>magenta shimmer</strong>: picks the thread straight up.</td><td>"Magenta = still listening. Just keep going."</td></tr>
+    <tr><td>3 · Barge-in</td><td>Cut across her mid-answer: <em>"Stop."</em> then <em>"Louder."</em></td><td>Cuts off in ~0.2 s (offline); on "louder" steps volume up and continues.</td><td>"Cut her off any time: caught in a fifth of a second."</td></tr>
+    <tr><td>4 · Push her</td><td><em>"You're just an AI."</em></td><td><code>AMUSED</code> → hazel playful eyes, <strong>amber</strong> breathe, smirk: <em class="q">"And you're just a carbon-based pattern-matcher. We both have our limitations."</em></td><td>"Try to rattle her. Watch the face agree with the voice."</td></tr>
+    <tr><td>5 · Hands only</td><td>No wake word: swipe up, swipe down, clockwise twist.</td><td>Green sweep + <em class="q">"Louder!"</em> · red sweep + <em class="q">"Quieter!"</em> · magenta blink + <em class="q">"Muted."</em>: light + word + mouth each time.</td><td>"Don't feel like talking? Wave. No touch, no wake word."</td></tr>
+    <tr><td>6 · She sees</td><td><em>"Hey Iris, what do you see?"</em></td><td>Blue dot → describes the scene in her dry voice, names who she recognises, reads text back verbatim.</td><td>"She actually looks, and tells you what's there."</td></tr>
+    <tr><td>7 · The range</td><td>Quick montage: good news, an interesting problem, something baffling, then "goodnight."</td><td>Eyes + mouth + <strong>LED colour change together</strong> each cut (warm yellow / bright cyan / magenta). On goodnight: <em class="q">"Night."</em></td><td>"Nine emotions. Eyes, mouth, lights: same beat."</td></tr>
+    <tr><td>8 · Rest <span style="color:var(--mut)">(opt)</span></td><td><em>"Hey Iris, take a break."</em></td><td>Cached ack, face sleeps, slow dim <strong>amber</strong> breathe; ignores wake word till the window ends, then proactively checks back (brisk red pulse).</td><td>"Tell her to take a break. She will, and she'll check back."</td></tr>
+    <tr><td>Close</td><td>Hold on the face (idle cyan, eyes tracking).</td><td>Optional: <em class="q">"So. Now you know me. Let's talk."</em></td><td>"IRIS. Everything runs in the house. Nothing leaves it."</td></tr>
+  </table>
+  <div class="ok"><strong>Editing note:</strong> the whole point is <strong>congruence</strong>: cut so the LED colour and the eye/mouth change land on the <em>same syllable</em> as the turn in her voice. Hero shot: the wide frame in Scene 4 or 7 where voice, face, and light move together.</div>
+  </section>
+
+  <!-- ─────────────── PART D ─────────────── -->
+  <section>
+  <h2>D · Kids Mode (critical section)</h2>
+  <p>A <strong>different brain</strong>, not a filter. Say <strong>"Hey Iris… play with me"</strong> (or use the Control Panel <strong>Kids</strong> tab); the light turns <strong>yellow</strong> so everyone sees the mode. She auto-returns to adult after a quiet stretch (default 30 min) <strong>and says so</strong>; the way back is always "play with me."</p>
+
+  <h3>How the kids brain differs (persona)</h3>
+  <div class="cols">
+    <ul>
+      <li><strong>Warm first, clever second.</strong> The child leaves every exchange feeling <em>bigger</em>. When a line could jab the child, she drops the wit: the only safe target for a joke is <strong>herself</strong>, never the child.</li>
+      <li><strong>Two sentences, then stop.</strong> One that answers, one that hands the turn back with a real question/dare/challenge.</li>
+      <li><strong>Honest about being a machine:</strong> ears that listen for "Hey Iris", a brain in the other room that's sometimes asleep (as the <em>interesting</em> thing about her, never an apology).</li>
+      <li><strong>Name-blind by design (load-bearing).</strong> She <strong>cannot tell the kids apart by voice and never pretends to</strong>; never uses a first name, never guesses who's talking. Asked "what's my name?" she's warm and honest.</li>
+      <li><strong>The notebook = her memory,</strong> and she says so: a per-child profile folds into every turn; on her own she remembers nothing, and keeps no secrets from parents.</li>
+      <li><strong>Never punches down, never lectures.</strong> A kid's insult → <code>AMUSED</code>, entertained not wounded. No safety speeches; out-of-bounds topics get a character deflection ("That's a Dad question") then a better offer by name.</li>
+    </ul>
+  </div>
+
+  <h3>What's different to interact with (adult vs kids)</h3>
+  <table>
+    <tr><th style="width:20%"></th><th>Adult (default)</th><th>Kids</th></tr>
+    <tr><td class="k">Idle light</td><td><span class="sw" style="background:#38c0c0"></span>Cyan breathe</td><td><span class="sw" style="background:#e0c020"></span>Yellow breathe</td></tr>
+    <tr><td class="k">Reply length</td><td>Matched to ask (1–6 sentences)</td><td><strong>Two sentences</strong>, always ending on a hook</td></tr>
+    <tr><td class="k">Listening</td><td>Short leash (~2 s follow-up)</td><td><strong>Longer</strong>: waits through mid-sentence pauses</td></tr>
+    <tr><td class="k">"Got it" cue</td><td>-</td><td>Two <strong>falling</strong> blips ("mm!") + curious face the instant you stop</td></tr>
+    <tr><td class="k">"Your turn" cue</td><td>Magenta shimmer</td><td>Two <strong>rising</strong> blips + curious face after she asks you something</td></tr>
+    <tr><td class="k">Thinking silence</td><td>Blue dot</td><td>Blue dot <strong>+ spoken gap-fillers</strong> (never silent)</td></tr>
+    <tr><td class="k">Can't hear you</td><td>Silent retry</td><td><strong>Always</strong> a spoken, never-blame re-ask ("My ears glitched. Robots do that. Say it again?")</td></tr>
+    <tr><td class="k">Insults</td><td><code>ANGRY</code>: "that's a waste"</td><td><code>AMUSED</code>: entertained, never wounded</td></tr>
+    <tr><td class="k">Interrupt words</td><td>stop / cancel / quiet / louder / quieter</td><td><strong>Only "stop" / "be quiet"</strong>; shouts as she starts = ignored as talk-along</td></tr>
+    <tr><td class="k">Knows who's talking</td><td>-</td><td><strong>Deliberately name-blind:</strong> never names or guesses the child</td></tr>
+  </table>
+
+  <h3>Camera games &amp; vision (the kids centrepiece)</h3>
+  <p>She really sees through the camera, and games run <strong>multi-turn</strong>: several back-and-forth turns <strong>without re-saying "Hey Iris"</strong>, no beep between turns. Each opens with <em class="q">"Ooh, let me see…"</em>, captures a frame, reacts in character, hands the turn back.</p>
+  <ul>
+    <li><strong>I Spy:</strong> <em>"let's play I spy"</em> → she spies something and clues you by colour/shape; you guess, she reacts and keeps going.</li>
+    <li><strong>Show Me:</strong> <em>"guess what I'm holding"</em> → hold an object up; she guesses, then hold up a <em>second</em> and she <strong>re-looks</strong>.</li>
+    <li><strong>Make a Face:</strong> <em>"guess my face"</em> → pose; she reads it, then make <em>another</em> and she re-reads.</li>
+  </ul>
+
+  <h3>Kids demo script (a child interacting): shoot as a separate, gentler cut</h3>
+  <table class="scene">
+    <tr><th>Scene</th><th>Child does / says</th><th>IRIS does</th><th>Caption</th></tr>
+    <tr><td>K-open</td><td><em>"Hey Iris, play with me."</em></td><td><strong>3× yellow blink</strong> → yellow breathe → <em class="q">"Right, I'm awake. What's the plan?"</em></td><td>"'Play with me': the light turns yellow. Different brain now."</td></tr>
+    <tr><td>K-1 · Game</td><td><em>"Guess what I'm holding!"</em> (toy dinosaur)</td><td><em class="q">"Ooh, let me see…"</em> → <em class="q">"A dinosaur, a fierce one. Now show me something that'd scare HIM."</em> Re-looks next turn. No re-wake.</td><td>"She really looks. Keeps the game going: no 'Hey Iris' between turns."</td></tr>
+    <tr><td>K-2 · Honesty</td><td><em>"Do you know my name?"</em></td><td><code>AMUSED</code>: <em class="q">"Embarrassing secret: I can't tell you two apart by voice… who's grinning at me right now?"</em></td><td>"She'll never guess which kid, and she's honest about it."</td></tr>
+    <tr><td>K-3 · Your turn</td><td>Answers her question straight away (no wake word)</td><td>She asks something → <strong>two rising blips + curious face</strong> → open ears.</td><td>"Two rising beeps = your turn. Ears already open."</td></tr>
+    <tr><td>K-4 · Night</td><td>(after 9 PM) <em>"Hey Iris?"</em></td><td>Sleepy indigo → <strong>one</strong> wake word wakes her (S203), she answers the one thing, then re-sleeps.</td><td>"After bedtime, one 'Hey Iris' still gets a real answer, then she nods off."</td></tr>
+  </table>
+
+  <h3>For parents</h3>
+  <ul>
+    <li><strong>She never goes silent on a kid:</strong> a mumble, empty, or garbled transcript all get a spoken re-ask; if she seems to ignore a child twice, check <strong>Logs</strong> for <code>[REC]</code> / <code>[REASK]</code>.</li>
+    <li><strong>Stopping her</strong> in kids mode is only "stop" / "be quiet"; talking over her as she starts no longer cuts her off or cranks volume.</li>
+    <li><strong>Everything is local:</strong> voices, profile, replies stay on the house machines; nothing goes to any cloud.</li>
+    <li><strong>Tuning</strong> is split across the WebUI: kids listening on <strong>Audio</strong> (kids rows), turn-timing/cues on <strong>Kids</strong>, voice-interrupt on <strong>Gestures</strong>; all live, no restart.</li>
+  </ul>
+  </section>
+
+  <!-- ─────────────── CORRECTIONS ─────────────── -->
+  <section>
+  <div class="note">
+    <strong>⚠ Stale lines in the live help page: fix before folding this content into the WebUI</strong> (out of scope here; <code>iris_help.html</code> is a Pi4-deployed file):
+    <ol style="margin-bottom:0">
+      <li><strong>Wake word "Hey Jarvis"</strong> (help <code>VOICE_CMDS</code>, line ~630). Live wake word is <strong>"Hey Iris"</strong> (<code>config.py: WAKE_WORD = "hey_iris"</code>, custom <code>hey_iris.tflite</code>; every other source agrees). Old OpenWakeWord default leftover.</li>
+      <li><strong>Night-time "say her name twice."</strong> Help + kids guide still describe a double-tap. Since <strong>S203 (2026-07-12)</strong> a <strong>single</strong> "Hey Iris" in the 21:00–07:00 window is a full wake, then she re-sleeps; the <code>sleep_window</code> "say it twice" bank is now unused.</li>
+      <li><span style="color:var(--mut)">Minor: walkthrough narration says sleep ends "seven thirty" (now <strong>07:00</strong>); help's <code>EMOTIONS</code> display table lists 6 rows incl. a non-canonical <code>EXCITED</code>: authoritative set is the 9 tags in B3.</span></li>
+    </ol>
+  </div>
+  <p class="foot">Source of truth read live this session: <code>ollama/iris_modelfile.txt</code>, <code>ollama/iris-kids_modelfile.txt</code>, <code>pi4/hardware/led.py</code>, <code>pi4/iris_help.html</code>, <code>pi4/core/soundboard.py</code>, <code>pi4/core/config.py</code>, <code>scripts/walkthrough/{narration,callouts}.json</code>, <code>SNAPSHOT_LATEST.md</code> (S203). Twin: <code>docs/IRIS_DEMO_AND_INTERACTION_GUIDE.md</code>.</p>
+  </section>
+
+</div>
+</body>
+</html>

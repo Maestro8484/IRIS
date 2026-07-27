@@ -139,6 +139,14 @@ except ImportError:
     _EYES_ON_TRIGGERS  = set()
     _VISION_TRIGGERS   = set()
 
+# S202: quiet-break ("do not disturb") trigger phrases. A REFLEX so it never
+# touches the LLM. Read the live set + start-prefixes from core.config.
+try:
+    from core.config import BREAK_TRIGGERS as _BREAK_TRIGGERS
+except ImportError:
+    _BREAK_TRIGGERS = set()
+_BREAK_STARTS = tuple(sorted(_BREAK_TRIGGERS, key=len, reverse=True))
+
 
 # ── Layer 2: UTILITY ──────────────────────────────────────────────────────────
 
@@ -267,6 +275,12 @@ class IntentRouter:
         return any(norm == p or norm.startswith(p + " ") for p in prefixes)
 
     def _layer0_reflex(self, norm: str) -> Optional[IntentResult]:
+        # S202: quiet break -- checked first (distinct phrases, no overlap with
+        # sleep/stop/wake). Exact match or trigger followed by a space
+        # ("bugger off iris", "take a break please") so trailing words don't miss.
+        if _BREAK_TRIGGERS and (norm in _BREAK_TRIGGERS
+                                or self._starts_phrase(norm, _BREAK_STARTS)):
+            return IntentResult(ROUTE_REFLEX, "BREAK", CONF_HIGH)
         if norm in _SLEEP_EXACT or self._starts_phrase(norm, _SLEEP_STARTS):
             return IntentResult(ROUTE_REFLEX, "SLEEP", CONF_HIGH, response="Goodnight.")
         if norm in _STOP_EXACT or self._starts_phrase(norm, _STOP_STARTS):
@@ -312,6 +326,28 @@ class IntentRouter:
         # Vision before time/date to avoid false matches on "what is this"
         if _VISION_TRIGGERS and any(t in norm for t in _VISION_TRIGGERS):
             return IntentResult(ROUTE_UTILITY, "VISION", CONF_HIGH)
+        # RD-068 WEATHER: the one layer-2 hit that does NOT intercept. It routes
+        # to the LLM and carries the real conditions in the payload, so she
+        # answers "do I need a coat?" in her own voice with a true number in
+        # hand. A canned utility string would answer the direct question and be
+        # useless for every other way the weather comes up.
+        #
+        # After vision (an umbrella in front of the camera is a vision turn) and
+        # before time/date, which cannot collide with it: _DATE_RE needs "what
+        # year|month|day|date" adjacent, and the math parser needs a digit.
+        #
+        # Imported here rather than at module scope so a missing or broken
+        # weather module can never stop the router from loading.
+        try:
+            from services import weather as _weather
+            if _weather.is_weather_question(norm):
+                _wx = _weather.clause_for(norm)
+                # Detected but no data (network down, API error) -> still log the
+                # WEATHER intent, inject nothing, and let her honesty answer.
+                return IntentResult(ROUTE_LLM, "WEATHER", CONF_HIGH,
+                                    payload={"weather_clause": _wx})
+        except Exception as _we:
+            print(f"[WX]   router lookup skipped: {_we}", flush=True)
         td = _time_date_reply(norm)
         if td is not None:
             is_t = bool(_TIME_RE.search(norm))

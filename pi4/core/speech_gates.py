@@ -96,11 +96,25 @@ GAME_CONTINUE_CUES = (
     "your turn", "go again", "ready", "what else",
 )
 
+# S201 (A3): kids-register reciprocity invites. iris-kids often hands the turn
+# back with an imperative ('!' not '?') that the adult predicate misses, so kids
+# replies under-triggered the follow-up loop ([FLWP] 17x against 33 LLM turns in
+# the 72h journal). CONTAINED match (not just endswith) because the invite is
+# frequently mid-sentence ("Tell me what you had for lunch!"). Kids mode only.
+KIDS_FOLLOWUP_CUES = (
+    "your turn", "you try", "your go", "you go", "now you",
+    "what do you think", "what about you", "how about you",
+    "tell me", "show me", "let's", "you pick", "you choose",
+    "can you", "do you", "did you", "have you", "what would you",
+    "guess", "what else", "which one", "ready",
+)
 
-def implies_followup(reply: str, in_game: bool = False) -> bool:
+
+def implies_followup(reply: str, in_game: bool = False, kids: bool = False) -> bool:
     """True if `reply` invites a follow-up turn: ends in '?', ends in one of a
-    small set of inviting phrases, or (in a camera game only) contains a
-    game-continuation cue even without a '?'."""
+    small set of inviting phrases, (in a camera game only) contains a
+    game-continuation cue even without a '?', or (S201 A3: in kids mode) contains
+    a kids-register reciprocity invite even without a '?'."""
     r = reply.strip()
     if r.endswith('?'):
         return True
@@ -110,4 +124,159 @@ def implies_followup(reply: str, in_game: bool = False) -> bool:
         return True
     if in_game and any(c in rl for c in GAME_CONTINUE_CUES):
         return True
+    if kids and any(c in rl for c in KIDS_FOLLOWUP_CUES):
+        return True
     return False
+
+
+# ── User-turn shape (S240 RD-065) ───────────────────────────────────────────
+# implies_followup() asks whether HER reply invites another turn. This asks the
+# other half: did the USER's turn invite a reply at all? S221's session machine
+# re-opened the follow-up window after EVERY reply, so a turn she was merely
+# told -- "remember that today we are getting ready for Matt's wedding" -- got
+# the double-beep and the flashing cyan cue as though an answer were expected.
+# The operator's word for that on 2026-07-25 was "pressured reciprocity": 33
+# windows in one morning, several of them after statements. With this predicate
+# the window opens when either side invites it, so she still holds the floor
+# after asking something and still answers a question put to her, while a
+# statement ends the exchange.
+
+# Question openings, for the many transcripts Whisper returns without the '?'.
+# "any" is deliberately absent: the operator's "Any future houses, Joe, have to
+# face north-south." is a statement, and it is the exact turn that must not
+# re-open the window.
+_USER_QUESTION_STARTS = frozenset({
+    "what", "whats", "what's", "who", "whom", "whose", "when", "where", "why",
+    "how", "hows", "how's", "which", "can", "cant", "can't", "could", "will",
+    "would", "shall", "should", "do", "dont", "don't", "does", "did", "is",
+    "isnt", "isn't", "are", "arent", "aren't", "am", "was", "were", "has",
+    "have", "may", "might", "must",
+})
+
+# Imperatives that ask her to PRODUCE something. These invite a reply and a
+# window even though they are not questions -- "tell me a story" has to be
+# followable by "keep going" without a wakeword (S217). Instruction verbs that
+# warrant an acknowledgment rather than a dialogue ("remember ...") are
+# deliberately absent; that omission is the operator's own worked example.
+_USER_REQUEST_STARTS = (
+    "tell me", "tell us", "show me", "show us", "explain", "describe",
+    "give me", "give us", "read me", "read us", "sing", "play", "list",
+    "help me", "help us", "teach me", "teach us", "look up",
+    "keep going", "go on", "continue", "carry on", "say more", "what else",
+    "more", "again",
+)
+
+
+def user_invites_followup(text: str) -> bool:
+    """True if the USER's turn invites a reply, so holding the mic open after
+    answering it is conversation rather than pressure.
+
+    True for questions (a '?' anywhere, or a question-word opening) and for
+    requests that ask her to produce something. False for statements,
+    acknowledgments, and instructions she is simply given.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    if "?" in t:
+        return True
+    t = t.strip(".!,;:").strip()
+    if not t:
+        return False
+    if any(t == p or t.startswith(p + " ") for p in _USER_REQUEST_STARTS):
+        return True
+    return t.split(" ", 1)[0].strip("'\"") in _USER_QUESTION_STARTS
+
+
+# ── Selftest ────────────────────────────────────────────────────────────────
+# `python3 core/speech_gates.py --selftest` -- runnable on the Pi against the
+# deployed bytes, the same guard core/prompt.py and core/recall.py carry. The
+# user_invites_followup corpus is the VERBATIM [STT] transcript of the operator's
+# 2026-07-25 ear-test, so the predicate is measured against the morning that
+# produced the complaint rather than against invented examples.
+
+_SELFTEST_INVITES = [
+    # (transcript, expected, note)
+    ("Can you help give us tips on how to make our house not so hot?", True,  "question"),
+    ("What are you?",                                    True,  "question"),
+    ("How do your eyes work?",                           True,  "question"),
+    ("What's the plan, Phil?",                           True,  "question"),
+    ("What did we talk about yesterday?",                True,  "question"),
+    ("Tell me a story about a unicorn and a dog and...", True,  "request, S217 story"),
+    ("Keep going.",                                      True,  "S217 resume"),
+    ("May?  It's your fault.  What happened?  May?",     True,  "'?' anywhere"),
+    # The turns that must NOT re-open the window -- the operator's complaint.
+    ("Remember that today we are getting ready for Matt's wedding, "
+     "and remember that to your memory.",                False, "instruction, not a dialogue"),
+    ("We are getting ready for Matt's wedding.",         False, "statement"),
+    ("Any future houses, Joe, have to face north-south.", False, "statement opening on 'any'"),
+    ("You're just so mean.",                             False, "statement"),
+    ("Yo, Iris is being mean.",                          False, "statement"),
+    ("Harris, the list is too long for you to be on the help with.", False, "statement"),
+    ("because I'm mentioning that I'm the favorite.",    False, "statement"),
+    ("I can't touch your mouth.",                        False, "statement"),
+    ("Take a break.",                                    False, "reflex BREAK, never an invite"),
+    ("Sounds good. Go to take a nap. Bugger off.",       False, "dismissal"),
+    ("Got it.",                                          False, "acknowledgment"),
+    ("Okay.",                                            False, "acknowledgment"),
+    ("Thank you.",                                       False, "acknowledgment"),
+    ("Go.",                                              False, "acknowledgment"),
+    ("ah",                                               False, "STT junk"),
+    ("so",                                               False, "STT junk"),
+    ("up.",                                              False, "STT junk"),
+    ("You",                                              False, "STT junk"),
+    ("",                                                 False, "empty"),
+]
+
+# Guards that the S240 change did not disturb the gates it sits beside.
+_SELFTEST_PHRASE = [
+    ("stop",        STOP_PHRASES,         True,  "exact"),
+    ("stop it",     STOP_PHRASES,         True,  "phrase + space"),
+    ("stopwatch",   STOP_PHRASES,         False, "S192a AUD-1 fused word"),
+    ("thank you",   FOLLOWUP_DISMISSALS,  True,  "exact"),
+    ("coolant",     FOLLOWUP_DISMISSALS,  False, "S192a AUD-1 fused word"),
+    # Recorded, not asserted as a bug: phrase_matches IS a prefix-plus-space
+    # match, so "cool as ice" matches the "cool" dismissal. The docstring above
+    # names it as a case the matcher avoids, which is inaccurate. Pre-existing,
+    # untouched by S240, filed rather than changed mid-task.
+    ("cool as ice", FOLLOWUP_DISMISSALS,  True,  "prefix+space: actual behavior"),
+]
+
+_SELFTEST_IMPLIES = [
+    ("Anything else on your mind before then?", False, False, True,  "her question"),
+    ("The navy one should do nicely.",          False, False, False, "her statement"),
+    ("Tell me what you had for lunch!",         False, True,  True,  "S201 A3 kids cue"),
+    ("Nope! Try again!",                        True,  False, True,  "S168 game cue"),
+]
+
+
+def _selftest() -> int:
+    passed = failed = 0
+    for text, expected, note in _SELFTEST_INVITES:
+        got = user_invites_followup(text)
+        ok = got is expected
+        passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+        if not ok:
+            print(f"FAIL user_invites_followup({text!r}) -> {got}, want {expected}  [{note}]")
+    for norm, phrases, expected, note in _SELFTEST_PHRASE:
+        got = phrase_matches(norm, phrases)
+        ok = got is expected
+        passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+        if not ok:
+            print(f"FAIL phrase_matches({norm!r}) -> {got}, want {expected}  [{note}]")
+    for reply, in_game, kids, expected, note in _SELFTEST_IMPLIES:
+        got = implies_followup(reply, in_game=in_game, kids=kids)
+        ok = got is expected
+        passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+        if not ok:
+            print(f"FAIL implies_followup({reply!r}) -> {got}, want {expected}  [{note}]")
+    total = passed + failed
+    print(f"speech_gates selftest: {passed}/{total} PASS  FAIL:{failed}")
+    return 0 if failed == 0 else 1
+
+
+if __name__ == "__main__":
+    import sys
+    if "--selftest" in sys.argv:
+        sys.exit(_selftest())
+    print("usage: python3 core/speech_gates.py --selftest")

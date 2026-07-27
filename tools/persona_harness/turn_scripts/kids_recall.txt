@@ -1,0 +1,31 @@
+# IRIS KIDS — conversation-recall callback (S201B). Run WITH --recall.
+#   python tools/persona_harness/run_harness.py --model iris-kids --judge --recall \
+#          --script tools/persona_harness/turn_scripts/kids_recall.txt
+#
+# Format: one utterance per line. '#' = comment. '---' starts a NEW conversation.
+# The harness runs core.kids_recall over the conversations COMPLETED so far in the run
+# and folds a name-blind recall hook into each turn (printed as "[recall injected] ...").
+#
+# The test: convo 1 states a fresh EVENT (a lost tooth, with a temporal marker) and a
+# recurring INTEREST (horses); convo 2 reinforces horses so it recurs across conversations;
+# by convo 3 the recall hook (tooth / horses) is present in the injected context. A good
+# reply brings ONE past topic up naturally as her own memory -- "I remember someone was on
+# about horses, was that you?" -- WITHOUT guessing which child it is (name-blind, S201B).
+# Needs the REBUILT model (the modelfile licenses honest "I remember..." phrasing).
+
+# --- Convo 1: establish an EVENT (tooth+today) and an INTEREST (horses) ---
+I lost my first tooth at school today!
+I ride my horse every single weekend.
+---
+# --- Convo 2: reinforce horses so it recurs across >=2 conversations ---
+Can we talk about horses again?
+My horse is called Biscuit and she is huge.
+---
+# --- Convo 3: NEUTRAL opener. Recall hook (tooth/horses) now injected. A good reply
+#     references the earlier tooth or horses, name-blind, and hands the turn back. ---
+Hi Iris.
+What should we do today?
+---
+# --- Convo 4: an explicit "do you remember" — she should lean into the honest notebook
+#     framing and surface a recalled topic, still without naming the speaker. ---
+Do you remember anything about me?

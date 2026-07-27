@@ -11,7 +11,19 @@
 #include "sleep_renderer.h"
 #include "util/logging.h"
 #include "sensors/LightSensor.h"
+
+// Gaze sensor transport, selected by USE_SEN0626 / USE_PERSON_SENSOR_I2C in
+// config.h (S212). Include exactly ONE: both headers typedef person_sensor_face_t
+// as an anonymous struct, so pulling in both is a redefinition error. The
+// GazeSensor alias lets the call sites below name Mode without hardcoding either
+// class -- the two Mode enums share values but are distinct types.
+#ifdef USE_SEN0626
+#include "sensors/SEN0626Sensor.h"
+using GazeSensor = SEN0626Sensor;
+#else
 #include "sensors/PersonSensor.h"
+using GazeSensor = PersonSensor;
+#endif
 
 // RD-033 tracking debug — set to 1 to log per-read face state to Serial.
 // DEFAULT OFF (0): one line per sensor read at ~14 Hz would fill journald.
@@ -53,9 +65,15 @@
 //   3 = hazel
 //   4 = blueFlame1
 //   5 = dragon
-//   6 = strikingBlue   (bigBlue removed)
+//   6 = strikingBlue
+//   7 = cat            8 = doomSpiral*   9 = anime*       10 = doe*
+//  11 = demon*        12 = skull        13 = leopard*     14 = toonstripe
+//  15 = fizzgig       16 = newt         17 = snake        18 = fish
+//  19 = brown         20 = bigBlue      21 = spikes       22 = firebox
+//  23 = blueFlame2    24 = doomRed
+//   (* = authored as an asymmetric {left, right} pair, not one shared eye)
 //
-// EYE:n selectable range: 0-6
+// EYE:n selectable range: 0-24 (bounded by EYE_IDX_COUNT below)
 //
 // PERSON SENSOR: stock chrismiller behavior -- always active, eyes always
 // track the largest detected face. autoMove resumes when no face is present.
@@ -77,7 +95,13 @@ static constexpr uint32_t EYE_IDX_HAZEL        = 3; // web UI
 static constexpr uint32_t EYE_IDX_BLUEFLAME1   = 4; // web UI
 static constexpr uint32_t EYE_IDX_DRAGON       = 5; // web UI
 static constexpr uint32_t EYE_IDX_STRIKINGBLUE = 6; // web UI (was 7; bigBlue removed)
-static constexpr uint32_t EYE_IDX_COUNT        = 7; // total entries in eyeDefinitions
+// S241: indices 7-24 are the vendored library, selectable but deliberately NOT
+// given firmware emotion defaults. Which texture means which emotion is DATA on
+// the Pi (EMOTION_EYE_MAP), decided by the operator's taste pass -- only the two
+// historical swaps below are baked, and they stay baked so ANGRY/CONFUSED work
+// even with an empty map. Named constants stop at the emotion-bearing ones on
+// purpose; the rest are addressed by number from the WebUI.
+static constexpr uint32_t EYE_IDX_COUNT        = 25; // total entries in eyeDefinitions
 
 // ---------------------------------------------------------------------------
 // EMOTION -> EYE PARAMETER MAPPING
@@ -89,7 +113,13 @@ struct EmotionParams {
   uint32_t maxGazeMs;
 };
 
-enum EmotionID { NEUTRAL=0, HAPPY, CURIOUS, ANGRY, SLEEPY, SURPRISED, SAD, CONFUSED, AMUSED, EMOTION_COUNT };
+// S241: ANNOYED and EXASPERATED appended (never inserted) so every existing ID
+// keeps its numeric value -- the [DBG] EMOTION cmd line prints the id and the
+// S47/RD-002 AMUSED precedent added its tag the same way. Unknown tags degrade
+// to NEUTRAL in parseEmotion below and in the Pi extractor, so this firmware and
+// RD-066's modelfile half can land in either order without breaking anything.
+enum EmotionID { NEUTRAL=0, HAPPY, CURIOUS, ANGRY, SLEEPY, SURPRISED, SAD, CONFUSED, AMUSED,
+                 ANNOYED, EXASPERATED, EMOTION_COUNT };
 
 static const EmotionParams emotionTable[EMOTION_COUNT] = {
   { 0.40f, false, 3000 }, // NEUTRAL
@@ -101,6 +131,41 @@ static const EmotionParams emotionTable[EMOTION_COUNT] = {
   { 0.25f, true,  4000 }, // SAD
   { 0.70f, true,  2000 }, // CONFUSED
   { 0.55f, false, 3000 }, // AMUSED
+  // ANNOYED: the theatrical squint that rides a witty jab. doBlink=false on
+  // purpose -- the squeeze IS the gesture and an immediate blink muddies it.
+  // Blink RATE stays normal (the choreographer does not suppress it), which is
+  // one of the things that keeps this readable as playful rather than as ANGRY.
+  { 0.45f, false, 2500 }, // ANNOYED
+  // EXASPERATED: the eye-roll. doBlink=false because the script fires its own
+  // settle-back blink at the end of the arc; a blink at t=0 would hide the roll.
+  { 0.50f, false, 3000 }, // EXASPERATED
+};
+
+// ── Per-emotion eye texture swap + auto-revert (S241) ────────────────────────
+// Generalizes the two hard-coded ANGRY/CONFUSED revert timers into one table.
+// eyeIdx < 0 means "no swap, keep whatever the user selected".
+// The two live rows below reproduce the previous constants EXACTLY (flame @
+// 9000 ms, hypnoRed @ 7000 ms) -- that equivalence is the acceptance test for
+// this refactor (H6 in docs/S239_eyeset_continuum_audit.md), not a nicety.
+// Deliberately NOT extended to the new indices: emotion-to-eye mapping is data
+// on the Pi (EMOTION_EYE_MAP), which sends EYE:n before EMOTION:x.
+struct EmotionEyeSwap {
+  int16_t  eyeIdx;
+  uint32_t revertMs;
+};
+
+static const EmotionEyeSwap emotionEyeSwap[EMOTION_COUNT] = {
+  { -1, 0 },                                            // NEUTRAL
+  { -1, 0 },                                            // HAPPY
+  { -1, 0 },                                            // CURIOUS
+  { (int16_t)EYE_IDX_ANGRY,    ANGRY_EYE_DURATION_MS }, // ANGRY
+  { -1, 0 },                                            // SLEEPY
+  { -1, 0 },                                            // SURPRISED
+  { -1, 0 },                                            // SAD
+  { (int16_t)EYE_IDX_CONFUSED, CONFUSED_EYE_DURATION_MS }, // CONFUSED
+  { -1, 0 },                                            // AMUSED
+  { -1, 0 },                                            // ANNOYED  (no flame swap: that is what makes it read playful, not hostile)
+  { -1, 0 },                                            // EXASPERATED
 };
 
 // ---------------------------------------------------------------------------
@@ -113,7 +178,11 @@ static uint32_t userDefaultEye{EYE_IDX_DEFAULT};
 static uint32_t defIndex{EYE_IDX_DEFAULT};
 
 LightSensor  lightSensor(LIGHT_PIN);
-PersonSensor personSensor(Wire);
+#ifdef USE_SEN0626
+GazeSensor    personSensor(SEN0626_SERIAL);  // DFRobot SEN0626 — Modbus RTU over UART (Serial4 = RX 16 / TX 17)
+#else
+GazeSensor    personSensor(Wire);            // Useful Sensors SEN-21231 — I2C 0x62 (SDA 18 / SCL 19)
+#endif
 bool         personSensorFound = USE_PERSON_SENSOR;
 
 static bool     faceWasPresent  = false;
@@ -122,13 +191,11 @@ static uint32_t lastFace1SentMs = 0;
 static char    serialBuf[SERIAL_BUF_SIZE];
 static uint8_t serialBufLen = 0;
 
-// Angry eye revert timer
-static bool     angryEyeActive  = false;
-static uint32_t angryEyeStartMs = 0;
-
-// Confused eye revert timer
-static bool     confusedEyeActive  = false;
-static uint32_t confusedEyeStartMs = 0;
+// Emotion eye-swap revert timer (S241). One generic slot replaces the separate
+// angry/confused pairs; which texture and how long now come from emotionEyeSwap.
+static bool     swapEyeActive   = false;
+static uint32_t swapEyeStartMs  = 0;
+static uint32_t swapEyeRevertMs = 0;
 
 // Eyes sleep state: when true, displays are blanked and renderFrame is skipped
 static bool     eyesSleeping = false;
@@ -147,6 +214,32 @@ static bool     psFacingRequired = false;                 // PS_CFG:FACING=0/1  
 static bool     psLedEnabled     = false;                 // PS_CFG:LED=0/1  on-sensor LED indicator. S185: default FALSE, matching the operator's actual saved preference (ps_config.json LED:0) — same "bake the known-good value as the autonomous default" pattern as CONF/FACING above. S153's TRUE default fought that preference on every Teensy reset (power cycle, brownout, or a soft reset that doesn't trigger a USB reconnect the Pi4 can detect and correct), which is why the LED kept relighting "no matter the WebUI setting" (RD-040 follow-up). enableLED() is still called live on every PS_CFG:LED command and at (re)detection, so turning it ON when wanted still works exactly as before.
 static uint32_t psLostMs         = FACE_LOST_TIMEOUT_MS;  // PS_CFG:LOST_MS=n  autoMove resume delay
 static float    psYBias          = 0.0f;                  // PS_CFG:Y_BIAS=f  additive Y target offset
+// ── S212c gaze shaping: signed gain + bias per axis ──────────────────────────
+// targetN = rawN * gain + bias, where rawN is the sensor-space target in -1..+1.
+// The SIGN of the gain is the direction and the MAGNITUDE is the range, so one
+// knob covers both "it's mirrored" and "it barely moves".
+//   X_GAIN default -1.0 reproduces the historical negation EXACTLY, so the Person
+//   Sensor rollback path is bit-identical at defaults. Flip to +1.0 to un-mirror.
+//   |gain| > 1 amplifies: at a close conversational distance (~18-24 in) a normal
+//   head movement only crosses a fraction of the sensor's 85 deg FOV, so raw
+//   deflection is small (~0.4 of full) and the eyes barely move. Gain 2.0-2.5 makes
+//   that read as real gaze. EyeController::constrainEyeCoord() normalises (x,y) to
+//   the unit circle, so over-gain saturates gracefully instead of clipping wrong.
+// X_GAIN default is TRANSPORT-CONDITIONAL, following the project's established
+// "bake the known-good value as the autonomous default" pattern (S153c CONF/FACING,
+// S185 LED): the sensor should be correct on power-up without depending on the Pi4
+// pushing ps_config.json after boot. The two parts report X in OPPOSITE conventions.
+// Operator-observed on the S212b bench (2026-07-17): with the historical -1.0 the
+// SEN0626 tracked MIRRORED (eyes went the wrong way relative to real head movement).
+// The Person Sensor's -1.0 is field-proven over many sessions and is left untouched
+// on the rollback path.
+#ifdef USE_SEN0626
+static float    psXGain          =  1.0f;                 // PS_CFG:X_GAIN=f  SEN0626: un-mirrored (operator-observed S212b, NOT instrument-measured)
+#else
+static float    psXGain          = -1.0f;                 // PS_CFG:X_GAIN=f  Person Sensor: historical negation, field-proven
+#endif
+static float    psYGain          =  1.0f;                 // PS_CFG:Y_GAIN=f  signed: sign = U/D direction, magnitude = U/D range
+static float    psXBias          =  0.0f;                 // PS_CFG:X_BIAS=f  additive X target offset (horizontal centering)
 
 // Mouth sleep frame throttle — min interval between frames to prevent flicker
 static uint32_t srMouthLastMs = 0;
@@ -202,7 +295,253 @@ static EmotionID parseEmotion(const char *name) {
   if (strcmp(name, "SAD")       == 0) return SAD;
   if (strcmp(name, "CONFUSED")  == 0) return CONFUSED;
   if (strcmp(name, "AMUSED")    == 0) return AMUSED;
+  if (strcmp(name, "ANNOYED")     == 0) return ANNOYED;      // S241
+  if (strcmp(name, "EXASPERATED") == 0) return EXASPERATED;  // S241
   return NEUTRAL;
+}
+
+// ---------------------------------------------------------------------------
+// LID CHOREOGRAPHER (S241, RD-067 / RD-066 item 3)
+// ---------------------------------------------------------------------------
+// Human observers read eyelid emotion from TIMING and COORDINATION, not from
+// static positions: surprise is the SPEED of the upper-lid raise, a genuine
+// smile narrows the eye from the LOWER lid, attention SUPPRESSES blinking,
+// drowsiness SLOWS blink closure. So this drives an envelope over time rather
+// than parking the lids at a per-emotion pose.
+//
+// Everything here uses the EXISTING public EyeController API. EyeController.h
+// is a protected file and is NOT touched.
+//
+// Three gates, all checked by reading EyeController.h this session:
+//  1. COMPOSITION: renderEye() applies blink as a MULTIPLIER over the damped
+//     openness (`upperF = upperFactor * (1.0f - blinkFactor)`, EyeController.h
+//     :309-310) while renderFrame() takes the override in place of
+//     computeEyelids() (:581-588). Override and blink therefore COMPOSE -- a
+//     blink still fully closes a scripted lid. No fallback needed.
+//  2. SLEW RATE: the built-in damping is an IIR (`f = f*0.7 + target*0.3`,
+//     :306-307) applied per eye per renderEye, and renderFrame renders one eye
+//     per call, so a step reaches ~90% in ~13 renderFrame calls -- too slow for
+//     a sub-150 ms snap on its own. Rather than edit the protected damping
+//     constant, snapIn below uses clearLidOverride(), which SNAPS every eye's
+//     stored lid factors to 1.0 outright (:504-508), and then immediately
+//     re-arms the override at the target. Exact for a fully-open first key,
+//     which is precisely what SURPRISED needs. No protected-file edit earned.
+//  3. COST: one setLidOpenness() per loop is two float assignments plus a
+//     constrain; the interpolation below is a handful of adds and multiplies.
+//
+// Idempotence: re-sending the SAME emotion while its script is still running
+// does NOT restart the envelope (see lidScriptStart). Journal evidence this
+// session shows one EMOTION per reply, but a restart-on-repeat would be a
+// latent bug the moment that changes.
+//
+// Lid semantics: 1.0 = fully open, 0.0 = fully closed. Raising the LOWER lid
+// (the Duchenne cheek push) therefore means a SMALLER lower value.
+
+struct LidKey  { uint16_t tMs; float upper; float lower; };
+struct GazeKey { uint16_t tMs; float x; float y; uint16_t moveMs; };
+
+struct LidScript {
+  const LidKey  *lids;
+  uint8_t        lidCount;
+  const GazeKey *gaze;        // nullptr unless the expression moves the eyes
+  uint8_t        gazeCount;
+  uint16_t       durationMs;  // total length; lids release at the end
+  bool           snapIn;      // instant first key (fully-open keys only)
+  bool           suppressBlink;
+  uint16_t       blinkAtMs;   // 0 = none; one blink() fired at this offset
+};
+
+// SURPRISED: the snap IS the expression. Full wide instantly, hold, then settle
+// to slightly-wide rather than all the way back.
+static const LidKey LK_SURPRISED[] = {
+  {   0, 1.00f, 1.00f }, { 700, 1.00f, 1.00f }, { 950, 0.85f, 0.80f },
+};
+// HAPPY: upper relaxed, LOWER lid raises -- the squint of a genuine smile. The
+// closure at 1500-2100 ms is a deliberate slow warm blink (the cat "I like you"
+// blink kids read instinctively), scripted as an envelope rather than blink()
+// because closure SPEED is the whole character of it and blink() is fixed at
+// 50-100 ms. That is also why auto-blink is suppressed across this script.
+static const LidKey LK_HAPPY[] = {
+  {   0, 0.95f, 1.00f }, { 350, 0.95f, 0.65f }, { 1500, 0.95f, 0.65f },
+  {1800, 0.10f, 0.65f }, { 2100, 0.95f, 0.65f }, { 2900, 0.95f, 0.65f },
+  {3300, 1.00f, 0.90f },
+};
+// AMUSED: the same Duchenne raise, pulsing at laugh rhythm. This is the S238
+// "laughing eyes" ask done through lid dynamics instead of a render-loop hack.
+static const LidKey LK_AMUSED[] = {
+  {   0, 0.95f, 1.00f }, { 300, 0.95f, 0.62f }, {  600, 0.95f, 0.80f },
+  { 900, 0.95f, 0.62f }, {1200, 0.95f, 0.80f }, { 1500, 0.95f, 0.62f },
+  {1900, 1.00f, 0.90f },
+};
+// CURIOUS: slight widen and, mostly, NOT blinking at you. Attention is the
+// suppression; it costs nothing and reads immediately.
+static const LidKey LK_CURIOUS[] = {
+  {   0, 1.00f, 1.00f }, { 300, 1.00f, 0.95f }, { 3500, 1.00f, 0.95f },
+};
+// ANGRY: upper lid DROPS and lower tightens up -- the glare. Blinks rare and
+// sharp, so auto-blink is off and exactly one blink() fires mid-hold.
+static const LidKey LK_ANGRY[] = {
+  {   0, 0.95f, 1.00f }, { 250, 0.55f, 0.70f }, { 4000, 0.55f, 0.70f },
+  {4400, 0.90f, 0.90f },
+};
+// ANNOYED: symmetric partial squeeze, both lids toward each other, held a beat,
+// then a QUICK release back to the warm baseline. Deliberately distinct from
+// ANGRY: symmetric rather than an upper-lid glare, no eye swap, normal blink
+// rate, and short. The playfulness lives in the release -- a squint that lets
+// go is a joke, a squint that holds is a threat.
+static const LidKey LK_ANNOYED[] = {
+  {   0, 0.95f, 1.00f }, { 180, 0.60f, 0.55f }, { 620, 0.60f, 0.55f },
+  { 780, 1.00f, 0.95f },
+};
+// SLEEPY: heavy droop, and the blinks are slow CLOSURES rather than blink()
+// calls -- 600 ms down and 600 ms up is what makes it read as drowsy.
+static const LidKey LK_SLEEPY[] = {
+  {   0, 0.90f, 1.00f }, { 600, 0.40f, 0.85f }, { 1800, 0.40f, 0.85f },
+  {2400, 0.12f, 0.85f }, {3000, 0.40f, 0.85f }, { 4600, 0.40f, 0.85f },
+  {5200, 0.10f, 0.85f }, {5800, 0.40f, 0.85f },
+};
+// SAD: lids heavy but less collapsed than SLEEPY, with one slow blink.
+static const LidKey LK_SAD[] = {
+  {   0, 0.90f, 1.00f }, { 700, 0.50f, 0.95f }, { 2600, 0.50f, 0.95f },
+  {3200, 0.20f, 0.95f }, {3900, 0.50f, 0.95f }, { 5200, 0.50f, 0.95f },
+};
+// CONFUSED: lids uneven-ish over time (a controller-global override cannot do
+// per-eye asymmetry -- that needs a baked asymmetric definition, which indices
+// 8/9/10/11/13 now provide for a later taste pass), so the "what?" reads as a
+// slow uncertain drift plus a widen.
+static const LidKey LK_CONFUSED[] = {
+  {   0, 0.95f, 1.00f }, { 400, 0.80f, 0.85f }, { 1400, 1.00f, 0.90f },
+  {2400, 0.80f, 0.85f }, {3400, 0.95f, 0.95f },
+};
+// EXASPERATED: the eye-roll. Brisk is a CORRECTNESS requirement, not taste -- a
+// fast roll is comedy, a slow roll is contempt. Lids ride at ~0.7 through the
+// arc and a settle-back blink lands at the end.
+static const LidKey LK_EXASPERATED[] = {
+  {   0, 0.95f, 1.00f }, { 120, 0.70f, 0.80f }, { 700, 0.70f, 0.80f },
+  { 820, 0.95f, 0.95f },
+};
+// Up, across, down and back: ~750 ms of travel. setTargetPosition() takes its
+// own move duration, so each leg is eased by the engine rather than stepped.
+static const GazeKey GK_EXASPERATED[] = {
+  {   0,  0.00f,  0.90f, 220 }, { 230,  0.85f,  0.55f, 230 },
+  { 470,  0.30f, -0.25f, 240 }, { 720,  0.00f,  0.00f, 200 },
+};
+
+// NEUTRAL and the two texture-swap emotions with no lid character get a null
+// script, which releases any override and hands the lids back to tracking.
+static const LidScript lidScripts[EMOTION_COUNT] = {
+  { nullptr,         0, nullptr, 0,    0, false, false,    0 }, // NEUTRAL
+  { LK_HAPPY,        7, nullptr, 0, 3500, false, true,     0 }, // HAPPY
+  { LK_CURIOUS,      3, nullptr, 0, 3700, false, true,     0 }, // CURIOUS
+  { LK_ANGRY,        4, nullptr, 0, 4600, false, true,  2200 }, // ANGRY
+  { LK_SLEEPY,       8, nullptr, 0, 6000, false, true,     0 }, // SLEEPY
+  { LK_SURPRISED,    3, nullptr, 0, 1200, true,  false,    0 }, // SURPRISED
+  { LK_SAD,          6, nullptr, 0, 5400, false, true,     0 }, // SAD
+  { LK_CONFUSED,     5, nullptr, 0, 3600, false, false,    0 }, // CONFUSED
+  { LK_AMUSED,       7, nullptr, 0, 2100, false, true,     0 }, // AMUSED
+  { LK_ANNOYED,      4, nullptr, 0,  900, false, false,    0 }, // ANNOYED
+  { LK_EXASPERATED,  4, GK_EXASPERATED, 4, 950, false, true, 780 }, // EXASPERATED
+};
+
+static const LidScript *lidActive       = nullptr;
+static EmotionID        lidActiveId     = NEUTRAL;
+static uint32_t         lidStartMs      = 0;
+static bool             lidBlinkFired   = false;
+static uint8_t          lidGazeNext     = 0;
+static bool             lidSavedAutoBlink = true;
+static bool             lidSavedAutoMove  = true;
+static bool             lidTookGaze     = false;
+
+// Release the lids back to normal tracking and restore whatever autoBlink /
+// autoMove were before the script took them.
+static void lidScriptRelease() {
+  if (!lidActive) return;
+  eyes->clearLidOverride();
+  if (lidActive->suppressBlink) eyes->setAutoBlink(lidSavedAutoBlink);
+  if (lidTookGaze)              eyes->setAutoMove(lidSavedAutoMove);
+  lidActive   = nullptr;
+  lidTookGaze = false;
+}
+
+static void lidScriptStart(EmotionID id) {
+  const LidScript *s = &lidScripts[id];
+
+  // Idempotent on a repeat of the SAME emotion: never restart a running
+  // envelope, or a re-sent tag would visibly stutter the expression.
+  if (lidActive == s && lidActiveId == id && s->lids != nullptr) return;
+
+  lidScriptRelease();
+  if (s->lids == nullptr || s->lidCount == 0) return;
+
+  lidActive     = s;
+  lidActiveId   = id;
+  lidStartMs    = millis();
+  lidBlinkFired = false;
+  lidGazeNext   = 0;
+
+  if (s->suppressBlink) {
+    lidSavedAutoBlink = eyes->autoBlinkEnabled();
+    eyes->setAutoBlink(false);
+  }
+  if (s->gaze != nullptr && s->gazeCount > 0) {
+    lidSavedAutoMove = eyes->autoMoveEnabled();
+    eyes->setAutoMove(false);   // autoMove would fight a scripted gaze arc
+    lidTookGaze = true;
+  }
+
+  // A fully-open first key can bypass the engine's lid damping outright:
+  // clearLidOverride() snaps the stored factors to 1.0, then re-arming the
+  // override at 1.0 leaves the damping filter already at its target.
+  if (s->snapIn) {
+    eyes->clearLidOverride();
+  }
+  eyes->setLidOpenness(s->lids[0].upper, s->lids[0].lower);
+}
+
+// Drive the active envelope. Called once per loop, before renderFrame().
+static void lidScriptTick() {
+  if (!lidActive) return;
+
+  const uint32_t t = millis() - lidStartMs;
+  if (t >= lidActive->durationMs) { lidScriptRelease(); return; }
+
+  const LidKey *k = lidActive->lids;
+  const uint8_t n = lidActive->lidCount;
+
+  float upper = k[n - 1].upper;
+  float lower = k[n - 1].lower;
+  if (t <= k[0].tMs) {
+    upper = k[0].upper;
+    lower = k[0].lower;
+  } else {
+    for (uint8_t i = 1; i < n; i++) {
+      if (t <= k[i].tMs) {
+        const uint32_t span = (uint32_t)(k[i].tMs - k[i - 1].tMs);
+        const float    f    = span ? (float)(t - k[i - 1].tMs) / (float)span : 1.0f;
+        upper = k[i - 1].upper + (k[i].upper - k[i - 1].upper) * f;
+        lower = k[i - 1].lower + (k[i].lower - k[i - 1].lower) * f;
+        break;
+      }
+    }
+  }
+  eyes->setLidOpenness(upper, lower);
+
+  // Scripted gaze legs (the eye-roll). eyesSpeaking already suppresses Person
+  // Sensor position updates during TTS (see the tracking block in loop()), and
+  // autoMove was taken at script start, so nothing competes for the target.
+  if (lidActive->gaze != nullptr) {
+    while (lidGazeNext < lidActive->gazeCount &&
+           t >= lidActive->gaze[lidGazeNext].tMs) {
+      const GazeKey &g = lidActive->gaze[lidGazeNext];
+      eyes->setTargetPosition(g.x, g.y, g.moveMs);
+      lidGazeNext++;
+    }
+  }
+
+  if (lidActive->blinkAtMs && !lidBlinkFired && t >= lidActive->blinkAtMs) {
+    eyes->blink();
+    lidBlinkFired = true;
+  }
 }
 
 static void applyEmotion(EmotionID id) {
@@ -211,23 +550,24 @@ static void applyEmotion(EmotionID id) {
   eyes->setMaxGazeMs(p.maxGazeMs);
   if (p.doBlink) eyes->blink();
 
-  if (id == ANGRY) {
-    setEyeDefinition(EYE_IDX_ANGRY);
-    angryEyeActive    = true;
-    angryEyeStartMs   = millis();
-    confusedEyeActive = false;
-  } else if (id == CONFUSED) {
-    setEyeDefinition(EYE_IDX_CONFUSED);
-    confusedEyeActive  = true;
-    confusedEyeStartMs = millis();
-    angryEyeActive     = false;
-  } else {
-    if (angryEyeActive || confusedEyeActive) {
-      setEyeDefinition(userDefaultEye);
-      angryEyeActive    = false;
-      confusedEyeActive = false;
-    }
+  // S241: table-driven texture swap. Behaviour is identical to the previous
+  // hard-coded if/else-if/else -- ANGRY takes flame for 9 s, CONFUSED takes
+  // hypnoRed for 7 s, each cancels the other, and any other emotion reverts a
+  // live swap to the user's selected eye.
+  const EmotionEyeSwap &sw = emotionEyeSwap[id];
+  if (sw.eyeIdx >= 0) {
+    setEyeDefinition((uint32_t)sw.eyeIdx);
+    swapEyeActive   = true;
+    swapEyeStartMs  = millis();
+    swapEyeRevertMs = sw.revertMs;
+  } else if (swapEyeActive) {
+    setEyeDefinition(userDefaultEye);
+    swapEyeActive = false;
   }
+
+  // S241: hand the lids their envelope for this emotion. NEUTRAL has a null
+  // script, so it releases any override and returns the lids to tracking.
+  lidScriptStart(id);
 }
 
 static void processSerial() {
@@ -253,7 +593,7 @@ static void processSerial() {
           uint32_t idx = (uint32_t)atoi(serialBuf + 4);
           if (idx < EYE_IDX_COUNT) {
             userDefaultEye = idx;
-            if (!angryEyeActive && !confusedEyeActive) {
+            if (!swapEyeActive) {
               setEyeDefinition(idx);
             }
             Serial.print("[DBG] EYE cmd: switched default to index ");
@@ -268,8 +608,8 @@ static void processSerial() {
           lastCommandMs = millis();
           if (!eyesSleeping) {
             eyesSleeping      = true;
-            angryEyeActive    = false;
-            confusedEyeActive = false;
+            swapEyeActive     = false;
+            lidScriptRelease();   // S241: never sleep holding a lid override
             // Disable changed-areas-only so the sleep renderer always sends full
             // frames. With updateChangedAreasOnly(true), fillScreen(black) on an
             // already-black framebuffer marks zero dirty areas, causing the SPI
@@ -339,7 +679,9 @@ static void processSerial() {
           Serial.print("[VER] IRIS-EYES firmware=");
           Serial.print(FIRMWARE_VERSION);
           Serial.print(" built=");
-          Serial.println(__DATE__);
+          Serial.print(__DATE__);
+          Serial.print(" proto=");
+          Serial.println(PROTOCOL_VERSION);
 
         } else if (strcmp(serialBuf, "IDLE:START") == 0) {
           lastCommandMs = 0; // force auto-start timer to treat this as immediate
@@ -390,14 +732,31 @@ static void processSerial() {
             *eq = '\0';
             const char* key = serialBuf + 7;
             float val = atof(eq + 1);
+            bool  known = true;   // S212c: gates the ack below to implemented keys only
             if      (strcmp(key, "CONF")    == 0) psConfGate       = (uint8_t)constrain((int)val, 0, 100);
             else if (strcmp(key, "FACING")  == 0) psFacingRequired = (val != 0.0f);
             else if (strcmp(key, "LOST_MS") == 0) psLostMs         = (uint32_t)val;
             else if (strcmp(key, "Y_BIAS")  == 0) psYBias          = val;
+            else if (strcmp(key, "X_GAIN")  == 0) psXGain          = val;   // S212c
+            else if (strcmp(key, "Y_GAIN")  == 0) psYGain          = val;   // S212c
+            else if (strcmp(key, "X_BIAS")  == 0) psXBias          = val;   // S212c
             else if (strcmp(key, "LED")     == 0) { psLedEnabled = (val != 0.0f);
                                                     if (hasPersonSensor()) personSensor.enableLED(psLedEnabled); }
-            Serial.print("[DBG] PS_CFG ");
-            Serial.print(key); Serial.print("="); Serial.println(eq + 1);
+            else                                    known = false;
+            // S212c: only ack keys this firmware ACTUALLY implements. The ack print
+            // used to sit after the chain with no else, so an unimplemented key acked
+            // identically to a real one: S212b cheerfully echoed "PS_CFG X_GAIN=1.0"
+            // while having no psXGain at all. That is a false confirmation in the
+            // WebUI, and worse, iris_post.py's CFG-DRIFT check compares saved config
+            // against these acks, so an unimplemented key reported NO drift. An
+            // UNKNOWN line is deliberately worded so it does NOT match iris_post.py's
+            // ack regex '\[DBG\] PS_CFG (\w+)=(\S+)'.
+            if (known) {
+              Serial.print("[DBG] PS_CFG ");
+              Serial.print(key); Serial.print("="); Serial.println(eq + 1);
+            } else {
+              Serial.print("[DBG] PS_CFG UNKNOWN key "); Serial.println(key);
+            }
           }
         }
       }
@@ -412,8 +771,18 @@ static void processSerial() {
 static void reportFaceState(bool facePresent) {
   uint32_t now = millis();
   if (facePresent && !faceWasPresent) {
+    // S212c: log EVERY acquisition. FACE_COOLDOWN_MS (30 s) used to gate this
+    // println as well as the greet, so FACE:1 was rate-limited to once per 30 s
+    // while FACE:0 fired on every single loss. /api/ps/status decides "tracking" by
+    // comparing the newest FACE:1 against the newest FACE:0, so any re-acquisition
+    // inside the cooldown was invisible and the Vision Cal card sat on "no face in
+    // view" while the eyes were actually locked. Live evidence (S212b, 30k lines):
+    // FACE:1 x6 vs FACE:0 x13. The cooldown exists to rate-limit the GREET (an
+    // expensive blocking redraw), not a log line, so it now gates only the greet.
+    // Still bounded (one line per real transition) and symmetric with FACE:0, which
+    // was never rate-limited.
+    Serial.println("FACE:1");
     if ((now - lastFace1SentMs) >= FACE_COOLDOWN_MS) {
-      Serial.println("FACE:1");
       lastFace1SentMs = now;
       // RD-030 #3 greet — DISABLED in the tracking path by default (RD-033 S133):
       // mouthGreet()'s synchronous SWSPI redraw blocked the loop here at acquisition,
@@ -442,6 +811,11 @@ static void reportFaceState(bool facePresent) {
 // must manually clock SCL to flush the stuck device, issue a STOP, then re-init Wire.
 // This is the step the S152 retry path was missing (it just re-probed a hung bus, which
 // is why "reseat fixes it, power-cycle doesn't": a reseat physically releases SDA).
+// S212: compiled ONLY on the I2C rollback path. UART has no SDA-latch failure
+// mode, so there is nothing for this to recover on the SEN0626 build — but it is
+// deliberately kept in-tree (not deleted) so re-landing the Person Sensor is a
+// config.h toggle + reflash. See 09_IRIS_INTEGRATION_PLAN.md sections 3 and 7.
+#ifndef USE_SEN0626
 static constexpr uint8_t PS_SDA_PIN = 18;
 static constexpr uint8_t PS_SCL_PIN = 19;
 
@@ -462,6 +836,7 @@ static void psI2cBusRecover() {
   Wire.begin();
   Wire.setClock(100000);
 }
+#endif  // !USE_SEN0626
 
 // ---------------------------------------------------------------------------
 // SETUP
@@ -475,8 +850,10 @@ void setup() {
   Serial.print("[VER] IRIS-EYES firmware=");
   Serial.print(FIRMWARE_VERSION);
   Serial.print(" built=");
-  Serial.println(__DATE__);
-  Serial.println("[DBG] Init -- nordicBlue default, flame/ANGRY, hypnoRed/CONFUSED, web eyes 3-7");
+  Serial.print(__DATE__);
+  Serial.print(" proto=");
+  Serial.println(PROTOCOL_VERSION);
+  Serial.println("[DBG] Init -- nordicBlue default, flame/ANGRY, hypnoRed/CONFUSED, web eyes 3-24");
   Serial.flush();
   Entropy.Initialize();
   randomSeed(Entropy.random());
@@ -488,6 +865,16 @@ void setup() {
   }
 
   if (hasPersonSensor()) {
+#ifdef USE_SEN0626
+    // SEN0626 (UART): begin() owns Serial4 bring-up + baud auto-detect and carries
+    // its own BOOT_SETTLE_MS power-on wait plus a 3-pass baud sweep, so probe ONCE.
+    // The I2C path's 10x isPresent() loop must NOT be reused here: the shim's
+    // isPresent() lazily re-runs that entire ~2.7 s sweep on every call while the
+    // sensor is absent, so 10 passes would hang boot for ~27 s. psI2cBusRecover()
+    // is not called — UART has no SDA-latch failure mode
+    // (09_IRIS_INTEGRATION_PLAN.md section 3).
+    personSensorFound = personSensor.begin();
+#else
     // Pi4 holds port open → Serial wait above skips; guarantee ≥2500ms from power-on before I2C probe.
     // SEN-21231 loads its ML model into SRAM on power-on; empirically needs 2-3s before it ACKs on I2C.
     while (millis() < 2500);
@@ -499,12 +886,16 @@ void setup() {
       psI2cBusRecover();  // S153b: clear a latched bus (sensor holding SDA low) before re-probing
       delay(200);
     }
+#endif
     if (personSensorFound) {
+      // These log strings are a CONTRACT with the Pi4: iris_web.py /api/ps/status
+      // greps "Person Sensor detected" / "No Person Sensor" to drive the Vision Cal
+      // status card. Do not reword either without updating that grep.
       Serial.println("[DBG] Person Sensor detected");
       personSensor.enableID(false);
-      personSensor.setMode(PersonSensor::Mode::Continuous);
+      personSensor.setMode(GazeSensor::Mode::Continuous);
       delay(200); // settle, then set LED to the configured state
-      personSensor.enableLED(psLedEnabled);
+      personSensor.enableLED(psLedEnabled);  // no-op on SEN0626 — no LED register exists
     } else {
       Serial.println("[DBG] No Person Sensor found");
     }
@@ -534,19 +925,39 @@ void loop() {
     static uint32_t lastReprobeMs = 0;
     static uint16_t reprobeCount  = 0;
     uint32_t nowProbe = millis();
-    if (nowProbe - lastReprobeMs >= 1000) {
+#ifdef USE_SEN0626
+    // S212: 30 s, NOT the I2C path's 1 s. An I2C probe is microseconds; the shim's
+    // isPresent() lazily re-runs a full ~2.7 s baud sweep on every call while the
+    // sensor is absent, and that blocks the render loop. At 1 s the eyes would
+    // stall essentially continuously whenever the sensor is unplugged. 30 s keeps
+    // hot-replug recovery while bounding the stall to ~2.7 s per 30 s — and only in
+    // the already-degraded absent state. UART also has no I2C latch-up mode, so the
+    // aggressive S135 cadence buys nothing here.
+    const uint32_t reprobeIntervalMs = 30000;
+#else
+    const uint32_t reprobeIntervalMs = 1000;
+#endif
+    if (nowProbe - lastReprobeMs >= reprobeIntervalMs) {
       lastReprobeMs = nowProbe;
       if (personSensor.isPresent()) {
         personSensor.enableID(false);
-        personSensor.setMode(PersonSensor::Mode::Continuous);
+        personSensor.setMode(GazeSensor::Mode::Continuous);
         delay(200); // settle, then set LED to the configured state
         personSensor.enableLED(psLedEnabled);
         personSensorFound = true;
         Serial.print("[DBG] Person Sensor detected (late re-probe #");
         Serial.print(reprobeCount); Serial.println(")");
       } else if (reprobeCount < 30) {
+        // Absent-sensor log line. CONTRACT with the Pi4: iris_web.py /api/ps/status
+        // greps this to drive the Vision Cal ABSENT state. It matches BOTH the
+        // "no ACK at 0x62" (I2C) and "no UART reply" (SEN0626) wordings. Keep both
+        // sides in sync or the card silently never reports ABSENT again.
+#ifdef USE_SEN0626
+        Serial.print("[DBG] Person Sensor search: no UART reply (#");
+#else
         psI2cBusRecover();  // S153b: unstick a latched I2C bus between re-probes
         Serial.print("[DBG] Person Sensor search: no ACK at 0x62 (#");
+#endif
         Serial.print(reprobeCount); Serial.println(")");
       }
       reprobeCount++;
@@ -555,13 +966,30 @@ void loop() {
 
   // Person sensor: skip during sleep to avoid I2C activity during heavy SPI load.
   if (!eyesSleeping && hasPersonSensor() && personSensor.read()) {
-    int maxSize = 0;
+    // S212b: face selection must NOT require a non-zero box AREA.
+    // This loop's job is "of the gated faces, pick the biggest"; `maxSize` is only
+    // a ranking key. The old code started maxSize at 0 and tested `size > maxSize`,
+    // which silently doubled as an "is there a face at all?" test. That works for the
+    // Person Sensor (real bounding boxes, area > 0) but is FATAL for the SEN0626:
+    // it reports a face CENTER, not a box, so the shim stores box_left==box_right==cx
+    // and box_top==box_bottom==cy (a deliberate, correct choice: a synthetic width
+    // was tried in CyclopsGaze and reverted at b84033d because it biased the recovered
+    // center near frame edges). Area is therefore always 0*0 = 0, `0 > 0` is false,
+    // maxSize never left 0, and EVERY face was discarded before reportFaceState() and
+    // setTargetPosition(), which both gate on `maxSize > 0`. Live symptom (S212,
+    // firmware=S212, SEN0626 found at 9600, PS_HEARTBEAT present=1): ZERO FACE:1/FACE:0
+    // lines ever emitted, and the eyes never left autoMove, so they looked like they
+    // were tracking (random idle gaze) while setTargetPosition() had never once run.
+    // Fix: track "did any gated face survive" separately from the ranking key.
+    // Ranking is unchanged for the Person Sensor rollback path (biggest still wins).
+    int  maxSize   = -1;
+    bool faceFound = false;
     person_sensor_face_t maxFace{};
     for (int i = 0; i < personSensor.numFacesFound(); i++) {
       const person_sensor_face_t face = personSensor.faceDetails(i);
       if ((!psFacingRequired || face.is_facing) && face.box_confidence > psConfGate) {
         int size = (face.box_right - face.box_left) * (face.box_bottom - face.box_top);
-        if (size > maxSize) { maxSize = size; maxFace = face; }
+        if (!faceFound || size > maxSize) { maxSize = size; maxFace = face; faceFound = true; }
       }
     }
 #if DEBUG_FACE
@@ -569,30 +997,41 @@ void loop() {
       int _nf = personSensor.numFacesFound();
       Serial.print("[DBG-F] nF="); Serial.print(_nf);
       Serial.print(" mxSz="); Serial.print(maxSize);
+      Serial.print(" fnd="); Serial.print(faceFound ? 1 : 0);  // S212b: the flag that actually gates tracking
       if (_nf > 0) {
         person_sensor_face_t _f0 = personSensor.faceDetails(0);
         Serial.print(" conf="); Serial.print(_f0.box_confidence);
         Serial.print(" fac="); Serial.print((int)_f0.is_facing);
       }
-      if (maxSize > 0) {
-        float _tx = -((static_cast<float>(maxFace.box_left) +
-                       static_cast<float>(maxFace.box_right - maxFace.box_left) / 2.0f) / 127.5f - 1.0f);
-        float _ty =  (static_cast<float>(maxFace.box_top) +
-                       static_cast<float>(maxFace.box_bottom - maxFace.box_top) / 3.0f) / 127.5f - 1.0f + psYBias;
-        Serial.print(" tX="); Serial.print(_tx, 2);
-        Serial.print(" tY="); Serial.print(_ty, 2);
+      if (faceFound) {
+        // S212c: must mirror the live math below (raw -> gain/bias) or this readout lies.
+        float _rx = (static_cast<float>(maxFace.box_left) +
+                     static_cast<float>(maxFace.box_right - maxFace.box_left) / 2.0f) / 127.5f - 1.0f;
+        float _ry = (static_cast<float>(maxFace.box_top) +
+                     static_cast<float>(maxFace.box_bottom - maxFace.box_top) / 3.0f) / 127.5f - 1.0f;
+        Serial.print(" rawXY="); Serial.print(_rx, 2); Serial.print(","); Serial.print(_ry, 2);
+        Serial.print(" tX="); Serial.print(_rx * psXGain + psXBias, 2);
+        Serial.print(" tY="); Serial.print(_ry * psYGain + psYBias, 2);
       }
       Serial.print(" aM="); Serial.print(eyes->autoMoveEnabled() ? 1 : 0);
       Serial.print(" spk="); Serial.print(eyesSpeaking ? 1 : 0);
       Serial.print(" tLost="); Serial.println(personSensor.timeSinceFaceDetectedMs());
     }
 #endif
-    reportFaceState(maxSize > 0);
+    reportFaceState(faceFound);
     if (!eyesSpeaking) {
-      if (maxSize > 0) {
+      if (faceFound) {
         eyes->setAutoMove(false);
-        float targetX = -((static_cast<float>(maxFace.box_left) + static_cast<float>(maxFace.box_right - maxFace.box_left) / 2.0f) / 127.5f - 1.0f);
-        float targetY = (static_cast<float>(maxFace.box_top) + static_cast<float>(maxFace.box_bottom - maxFace.box_top) / 3.0f) / 127.5f - 1.0f + psYBias;
+        // S212c: raw sensor-space target (-1..+1), then shaped by signed gain + bias.
+        // The box-derived form is preserved verbatim so the Person Sensor rollback
+        // path is unchanged: its (box_bottom-box_top)/3 term aims a third down the
+        // box (eye level). SEN0626's box is center-only, so that term is 0 and this
+        // collapses to the exact center. Defaults (X_GAIN=-1, Y_GAIN=+1, X_BIAS=0)
+        // reproduce the historical math bit-for-bit.
+        float rawX = (static_cast<float>(maxFace.box_left) + static_cast<float>(maxFace.box_right - maxFace.box_left) / 2.0f) / 127.5f - 1.0f;
+        float rawY = (static_cast<float>(maxFace.box_top)  + static_cast<float>(maxFace.box_bottom - maxFace.box_top) / 3.0f) / 127.5f - 1.0f;
+        float targetX = rawX * psXGain + psXBias;
+        float targetY = rawY * psYGain + psYBias;
         eyes->setTargetPosition(targetX, targetY);
       } else if (personSensor.timeSinceFaceDetectedMs() > psLostMs && !eyes->autoMoveEnabled()) {
         eyes->setAutoMove(true);
@@ -616,18 +1055,13 @@ void loop() {
     return;
   }
 
-  // Angry eye revert: flame -> userDefaultEye after ANGRY_EYE_DURATION_MS
-  if (angryEyeActive && (millis() - angryEyeStartMs) >= ANGRY_EYE_DURATION_MS) {
+  // Emotion eye-swap revert -> userDefaultEye after this emotion's revertMs
+  // (S241: one generic timer; ANGRY=9000 and CONFUSED=7000 now come from
+  // emotionEyeSwap rather than from two separate hard-coded blocks.)
+  if (swapEyeActive && (millis() - swapEyeStartMs) >= swapEyeRevertMs) {
     setEyeDefinition(userDefaultEye);
-    angryEyeActive = false;
-    Serial.println("[DBG] ANGRY revert -> userDefaultEye");
-  }
-
-  // Confused eye revert: hypnoRed -> userDefaultEye after CONFUSED_EYE_DURATION_MS
-  if (confusedEyeActive && (millis() - confusedEyeStartMs) >= CONFUSED_EYE_DURATION_MS) {
-    setEyeDefinition(userDefaultEye);
-    confusedEyeActive = false;
-    Serial.println("[DBG] CONFUSED revert -> userDefaultEye");
+    swapEyeActive = false;
+    Serial.println("[DBG] EYE swap revert -> userDefaultEye");
   }
 
   if (hasBlinkButton() && digitalRead(BLINK_PIN) == LOW) eyes->blink();
@@ -643,6 +1077,8 @@ void loop() {
       eyes->setPupil(value);
     });
   }
+
+  lidScriptTick();   // S241: advance the lid envelope before the frame is drawn
 
   eyes->renderFrame();
 

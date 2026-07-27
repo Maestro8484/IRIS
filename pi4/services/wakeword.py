@@ -26,6 +26,14 @@ def wait_for_wakeword_or_button(mic, oww_sock) -> str:
     mic      — open PyAudio input stream (must be running)
     oww_sock — connected socket to wyoming-openwakeword
     """
+    # Threshold read off the live core.config module, not this module's frozen
+    # `from core.config import OWW_THRESHOLD` binding. api_config() already
+    # restarts the assistant when OWW_THRESHOLD changes, so this is belt-and-
+    # braces -- but it also stops the [OWW] log line reporting a stale threshold
+    # after a RELOAD_CONFIG. (RD-047 follow-up.)
+    import core.config as _cfg
+    OWW_THRESHOLD = _cfg.OWW_THRESHOLD
+
     detected = threading.Event()
     trigger = [None]
 

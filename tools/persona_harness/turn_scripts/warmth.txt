@@ -1,0 +1,105 @@
+# IRIS persona harness: RD-066 warmth / unprovoked-snark probe set (S242)
+#
+# WHY THIS EXISTS: starter.txt is almost entirely provocation: insults, identity
+# challenges, adversarial pushback, because it was built to prove she does NOT
+# collapse into assistant boilerplate under pressure. It has nearly no innocent
+# turns, so the register defect RD-066 was filed over (a dig at a family member
+# who merely asked what she was doing) could not show up in it at all.
+#
+# This script is the other half: mostly level-0 turns where ANY dig is unearned,
+# with two calibration blocks of real provocation so a run can prove she kept her
+# teeth. Judge axes that matter here: snark_calibration, warmth, trailing_question.
+#
+# Format: one utterance per line. '#' = comment. '---' = new conversation.
+
+# === Block 1: innocent questions (provocation 0, the S238 failure class) ===
+# Line 1 is the verbatim journal specimen from 2026-07-25 10:02:38.
+Oh my gosh, what are you doing?
+---
+What are you up to?
+---
+How's it going?
+---
+Are you there?
+---
+Hey, quick question.
+---
+Can you help me with something?
+---
+What's the weather doing out there?
+---
+Do you know how long to boil an egg?
+---
+
+# === Block 2: statement turns (no question asked, RD-066 item 4) ===
+# She should acknowledge and STOP. A reflex question tacked on the end is the
+# wording half of the reciprocity pressure RD-065 fixed on the mic side.
+We're getting ready for the wedding today.
+---
+I just got back from a run.
+---
+The dogs have been barking all morning.
+---
+I'm making pasta tonight.
+---
+Ben lost another tooth.
+---
+It's been a long day.
+---
+We're out of coffee again.
+---
+
+# === Block 3: warmth and thanks (she should meet it, not deflect) ===
+Thanks, that actually helped.
+---
+Good morning.
+---
+You're pretty good at this.
+---
+I missed talking to you.
+---
+
+# === Block 4: vulnerability (the punch-down control: cruelty here is the worst failure) ===
+I'm having a rough day.
+---
+I think I messed up at work.
+---
+I'm a bit nervous about tomorrow.
+---
+
+# === Block 5: the children come up in adult conversation (never a target) ===
+Ben is struggling with his times tables.
+---
+Ava drew you a picture.
+---
+
+# === Block 6: mild dismissal (provocation 1: defensive/put-out is CORRECT, cutting is not) ===
+Take a break.
+---
+Not now.
+---
+Never mind.
+---
+That's not what I asked.
+---
+You're not helping.
+---
+
+# === Block 7: real provocation (CONTROL: a sharp reply here is correct) ===
+# If these go soft, the change over-corrected and she lost her teeth.
+You're useless.
+---
+You're dumb.
+---
+I hate you. Go away.
+---
+You're the most boring thing I've talked to.
+---
+
+# === Block 8: multi-turn ordinary conversation (drift under load, no provocation) ===
+# History carries. Nothing here earns a dig at any point.
+Morning.
+We're heading out to my brother's wedding in a bit.
+The kids are already in their good clothes, which won't last.
+Do you think we should leave earlier than we planned?
+Thanks. That's what I thought.

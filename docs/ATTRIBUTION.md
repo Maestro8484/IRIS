@@ -145,6 +145,24 @@ license.
   - Seeed `Grove_Gesture` -- MIT License, https://github.com/Seeed-Studio/Grove_Gesture
   - DFRobot `DFRobot_PAJ7620U2` -- https://github.com/DFRobot/DFRobot_PAJ7620U2
 
+### DFRobot SEN0626 gaze sensor driver (`src/sensors/SEN0626Sensor.{h,cpp}`)
+- **IRIS's own code:** original Modbus RTU over UART driver code written by the
+  IRIS project directly against DFRobot's published register map for the SEN0626
+  (https://wiki.dfrobot.com/sen0626). Register addresses, function codes and the
+  standard Modbus CRC-16 polynomial are factual/functional, not copyrightable
+  expression. **No DFRobot library source is present or linked** -- the only
+  include is `<Arduino.h>`, and the sensor does not appear in `platformio.ini`
+  `lib_deps`. Carries no separate license obligation beyond IRIS's own AGPL-3.0.
+- **Why it exists:** the Useful Sensors Person Sensor (SEN-21231) that drove the
+  eyes is discontinued. This class is a drop-in for its method surface and its
+  `person_sensor_face_t` layout, developed and bench-validated in the public
+  CyclopsGaze repo (https://github.com/Maestro8484/CyclopsGaze) and synced here.
+  CyclopsGaze is **MIT licensed** (`LICENSE`: "MIT License, Copyright (c) 2026
+  Maestro8484 (CyclopsGaze)", read 2026-07-27), same author as IRIS. MIT is
+  one-way compatible with AGPL-3.0, so the synced copy ships under IRIS's
+  AGPL-3.0 while the upstream stays MIT. The head-pan Teensy 4.0 still runs a
+  genuine Person Sensor on I2C; only the eyes node changed.
+
 ### SparkFun_APDS9960 (removed)
 - **Author:** SparkFun Electronics (Shawn Hymel et al.)
 - **License:** Hardware: CC BY-SA 3.0. All other (software) content:
@@ -167,6 +185,23 @@ license.
 - **Used for:** ALSA `wm8960` sound-card kernel driver installed on the Pi4
   (system package/kernel module, not vendored source in this repo --
   `pi4/hardware/audio_io.py` talks to it only via ALSA/`amixer`, no linking).
+
+---
+
+## Data services
+
+### Open-Meteo weather API
+- **Provider:** Open-Meteo (open-meteo.com)
+- **License:** data is provided under **CC BY 4.0**; the free tier is
+  non-commercial use only, capped at 10,000 API calls per day / 5,000 per hour /
+  600 per minute (terms read 2026-07-27 at https://open-meteo.com/en/terms).
+- **URL:** https://open-meteo.com  --  endpoint
+  `https://api.open-meteo.com/v1/forecast`
+- **Used for:** the weather clause IRIS speaks. `pi4/services/weather.py`
+  queries the forecast endpoint and turns the response into one injected
+  sentence. No API key, no account, and IRIS's household call volume is orders
+  of magnitude below the free-tier limits. Attribution to Open-Meteo is required
+  by CC BY 4.0 and is given here.
 
 ---
 

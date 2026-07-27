@@ -10,7 +10,7 @@
         .\scripts\flash_t40.ps1 -SkipBuild
 
 .NOTES
-    Pi4 must be reachable at 192.168.1.200.
+    Pi4 must be reachable at 192.168.0.10.
     teensy_loader_cli + 49-teensy.rules already installed on Pi4.
     -s flag triggers T40 bootloader via 1200-baud USB reset (no button press needed).
     --mcu=TEENSY40 prevents cross-flashing T41 even if both are connected.
@@ -18,11 +18,22 @@
 
 param([switch]$SkipBuild)
 
-$PI4      = "pi@192.168.1.200"
+$PI4      = "pi@192.168.0.10"
 $root     = Split-Path -Parent $PSScriptRoot
 $t40dir   = Join-Path $root "servo_teensy40\teensy40_base_mount"
 $hexLocal = Join-Path $t40dir ".pio\build\teensy40\firmware.hex"
 $hexPi4   = "/tmp/servo.hex"
+
+# 0 — Version-guard preflight (RD-048 move 3, S213): abort the flash if a
+# versioned contract (serial commands / PROTOCOL_VERSION / SCHEMA_VERSION)
+# changed without its version integer being bumped.
+# S242: SCOPED to the T4.0 contract, so an unrelated T4.1 edit cannot block a
+# servo flash. A bare `version_guard.py --check` still checks everything.
+python "$root\scripts\version_guard.py" --check t40_contract
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[T40] version_guard FAILED - bump the version (or --accept) before flashing." -ForegroundColor Red
+    exit 1
+}
 
 # 1 — Build
 if (-not $SkipBuild) {

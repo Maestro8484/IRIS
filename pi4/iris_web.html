@@ -30,6 +30,7 @@
   <button onclick="tab('chat',this)">Chat</button>
   <button onclick="tab('bench',this)">Bench</button>
   <button onclick="tab('gestures',this)">Gestures</button>
+  <button onclick="tab('kids',this);_kidsTabHook()">Kids</button>
   <button onclick="tab('ogle_cal',this);_oglecalTabHook()">Vision Cal</button>
   <button onclick="tab('soundboard',this);fetchSoundboard()">Soundboard</button>
   <a href="/help" target="_blank" style="margin-left:auto;padding:5px 12px;color:var(--accent);border:1px solid var(--accent);border-radius:4px;text-decoration:none;font-size:.85em;align-self:center;white-space:nowrap">? Help</a>
@@ -58,13 +59,25 @@
     <button class="btn btn-primary" onclick="saveFields(['KIDS_RECORD_SECONDS','KIDS_SILENCE_SECS','KIDS_SILENCE_RMS'])">Save Kids Audio</button>
   </div>
   <div class="card">
+    <h2>Adaptive Endpoint</h2>
+    <p class="hint">S199: the recorder measures room noise per turn and closes on speech-end relative to it — the RMS gates above act as minimum floors. The silence timeouts above still set how long a pause ends the turn. Applies to adult and kids recording; changes apply on the next turn, no restart. <strong>S201:</strong> the trailing-silence counter is now <em>leaky</em> — a burst of intermittent room noise (sibling, TV, dog) no longer resets it to zero, so a mostly-quiet room endpoints promptly instead of running to the record cap. Flip the debug log on to see a per-recording <code>[REC-DBG]</code> line (baseline / silence floor / peak / reason) in Logs.</p>
+    <div class="field-row"><label>Noise baseline window (s)</label><input type="number" id="ENDPOINT_BASELINE_MS" step="0.05" min="0.1" max="2"></div>
+    <div class="field-row"><label>Speech onset ×noise</label><input type="number" id="ENDPOINT_SPEECH_MULT" step="0.1"></div>
+    <div class="field-row"><label>Onset sustain (s)</label><input type="number" id="ENDPOINT_ONSET_MIN_MS" step="0.02" min="0.06" max="1"></div>
+    <div class="field-row"><label>Silence floor ×noise</label><input type="number" id="ENDPOINT_SILENCE_MULT" step="0.1"></div>
+    <div class="field-row"><label>No-speech exit (s)</label><input type="number" id="ENDPOINT_NOSPEECH_SECS" step="0.5"></div>
+    <div class="field-row"><label>Leaky silence decay (chunks/spike)</label><input type="number" id="ENDPOINT_SILENCE_DECAY" step="1" min="1" max="50"></div>
+    <div class="field-row"><label>Endpoint debug log ([REC-DBG])</label><select id="ENDPOINT_DEBUG"><option value="0">Off</option><option value="1">On</option></select></div>
+    <button class="btn btn-primary" onclick="saveFields(['ENDPOINT_BASELINE_MS','ENDPOINT_SPEECH_MULT','ENDPOINT_ONSET_MIN_MS','ENDPOINT_SILENCE_MULT','ENDPOINT_NOSPEECH_SECS','ENDPOINT_SILENCE_DECAY','ENDPOINT_DEBUG'])">Save Endpoint Settings</button>
+  </div>
+  <div class="card">
     <h2>Speaker Volume</h2>
     <p class="hint">wm8960 Class D direct output. Range 0–127. Takes effect immediately.</p>
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px">
-      <input type="range" id="vol-slider" min="0" max="127" value="110"
+      <input type="range" id="vol-slider" min="0" max="127" value="121"
              style="flex:1;accent-color:var(--blue);height:6px;cursor:pointer"
              oninput="document.getElementById('vol-display').textContent=this.value+' ('+Math.round(this.value/127*100)+'%)'">
-      <span id="vol-display" style="width:64px;text-align:right;color:var(--text);font-size:13px;flex-shrink:0">110 (87%)</span>
+      <span id="vol-display" style="width:64px;text-align:right;color:var(--text);font-size:13px;flex-shrink:0">121 (95%)</span>
     </div>
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button class="btn btn-primary" onclick="setVolume()">Set Volume</button>
@@ -136,7 +149,7 @@
       <input type="number" id="KOKORO_SPEED" step="0.05" min="0.5" max="2.0" style="width:80px">
       <span style="font-size:12px;color:var(--muted);margin-left:6px">0.5–2.0 &nbsp;(IRIS "M" voice = 0.95)</span>
     </div>
-    <p class="hint" style="margin-bottom:8px">Voice name/blend sent to Kokoro API. <a href="http://192.168.1.3:8004/web" target="_blank" style="color:var(--blue)">Open Kokoro Web UI</a></p>
+    <p class="hint" style="margin-bottom:8px">Voice name/blend sent to Kokoro API. <a href="http://192.168.0.20:8004/web" target="_blank" style="color:var(--blue)">Open Kokoro Web UI</a></p>
     <button class="btn btn-primary" onclick="saveKokoroSettings()">Save Kokoro Settings</button>
   </div>
   <div class="card">
@@ -156,6 +169,54 @@
     <button class="btn btn-primary" onclick="saveFields(['FOLLOWUP_TIMEOUT','KIDS_FOLLOWUP_TIMEOUT','FOLLOWUP_MAX_TURNS','CONTEXT_TIMEOUT_SECS'])">Save</button>
   </div>
   <div class="card">
+    <h2>Conversation Flow <span class="hint" style="font-size:11px">(S220b)</span></h2>
+    <p class="hint">A conversation session opens after every reply, not just questions, so a quick follow-up doesn't need the wake word again. The re-wake grace period suppresses her wake-up quip if the wake word arrives while a session is still open.</p>
+    <div class="field-row"><label>Conversation session (window after every reply)</label><select id="CONVO_SESSION_ENABLED"><option value="0">Off</option><option value="1">On</option></select></div>
+    <div class="field-row"><label>Re-wake grace period (s, 0=off)</label><input type="number" id="CONVO_REENTRY_GRACE_S" step="1" min="0" max="3600"></div>
+    <div class="field-row"><label>In-conversation follow-up window (s)</label><input type="number" id="CONVO_SESSION_WINDOW_S" step="0.5" min="2" max="30"></div>
+    <div class="field-row"><label>Conversation safety cap (turns)</label><input type="number" id="CONVO_SESSION_MAX_TURNS" step="1" min="1" max="100"></div>
+    <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+      <p class="hint" style="font-size:11px"><b>Trajectory steering</b> (experimental, Phase 2 -- keep Off): steers multi-turn conversation direction. Not yet vetted for live use.</p>
+      <div class="field-row"><label>Trajectory steering (experimental, keep Off)</label><select id="TRAJECTORY_ENABLED"><option value="0">Off</option><option value="1">On</option></select></div>
+      <div class="field-row"><label>Trajectory thread callbacks (H2-gated, keep Off)</label><select id="TRAJECTORY_THREADS_ENABLED"><option value="0">Off</option><option value="1">On</option></select></div>
+      <div class="field-row"><label>Trajectory debug logging</label><select id="TRAJECTORY_DEBUG"><option value="0">Off</option><option value="1">On</option></select></div>
+    </div>
+    <button class="btn btn-primary" style="margin-top:12px" onclick="saveFields(['CONVO_SESSION_ENABLED','CONVO_REENTRY_GRACE_S','CONVO_SESSION_WINDOW_S','CONVO_SESSION_MAX_TURNS','TRAJECTORY_ENABLED','TRAJECTORY_THREADS_ENABLED','TRAJECTORY_DEBUG'])">Save</button>
+  </div>
+  <div class="card">
+    <h2>Memory &amp; Recall <span class="hint" style="font-size:11px">(S224)</span></h2>
+    <p class="hint">She can be asked about earlier conversations: how a story ended, who won the last game, what she thought of a drawing. Finished conversations ship to GandalfAI, which stores them and finds the matching one. Everything here applies on her next reply, no restart.</p>
+    <p class="hint" style="font-size:11px"><b>Known rough edge, re-measured S224e:</b> handed a real memory that does not answer what was asked, she used to fill the gap from imagination &mdash; inventing rest-ice-compression-elevation when asked what a doctor said about a knee. The instruction she is given was reworded and re-measured at n=22 per wording: she now declines cleanly in about 3 replies out of 4, up from about 1 in 7, with no measurable change to how she handles a memory that does fit. Better, not fixed. Turn on debug logging below and check <code>journalctl -u assistant | grep RECALL</code> to see what she was handed next to what she said.</p>
+    <div class="field-row"><label>Episodic recall</label><select id="RECALL_ENABLED"><option value="0">Off</option><option value="1">On</option></select></div>
+    <div class="field-row"><label>Confidence needed to use a memory (0-1)</label><input type="number" id="RECALL_MIN_SCORE" step="0.01" min="0" max="1"></div>
+    <p class="hint" style="font-size:11px">Raise it and she uses fewer memories but invents less. Lower it and she recalls more, including things that only look related. 0.58 is the measured balance point; 0.65 is the cautious setting. <b>Expect &ldquo;no record of that&rdquo; at first:</b> the stored corpus is still small, and ordinary questions currently score 0.46&ndash;0.53 against it, below this bar. That is the feature working, not failing, and it corrects itself as conversations accumulate.</p>
+    <div class="field-row"><label>Say so when she has no memory of it</label><select id="RECALL_MISS_CLAUSE"><option value="0">Off</option><option value="1">On</option></select></div>
+    <p class="hint" style="font-size:11px">Keep this On. With it Off she gets no signal that the search came back empty, and fills the silence with invention.</p>
+    <div class="field-row"><label>Memories per question</label><input type="number" id="RECALL_K" step="1" min="1" max="5"></div>
+    <div class="field-row"><label>Memory size limit (characters)</label><input type="number" id="RECALL_MAX_CHARS" step="50" min="100" max="2500"></div>
+    <div class="field-row"><label>Search timeout (s)</label><input type="number" id="RECALL_TIMEOUT_S" step="0.1" min="0.2" max="10"></div>
+    <div class="field-row"><label>Debug logging ([RECALL] lines)</label><select id="RECALL_DEBUG"><option value="0">Off</option><option value="1">On</option></select></div>
+    <button class="btn btn-primary" style="margin-top:12px" onclick="saveFields(['RECALL_ENABLED','RECALL_MIN_SCORE','RECALL_MISS_CLAUSE','RECALL_K','RECALL_MAX_CHARS','RECALL_TIMEOUT_S','RECALL_DEBUG'])">Save</button>
+  </div>
+  <div class="card">
+    <h2>Weather <span class="hint" style="font-size:11px">(RD-068)</span></h2>
+    <p class="hint">She used to invent the weather, in celsius. Now, when a question touches it &mdash; &ldquo;what's it doing out there&rdquo;, &ldquo;do I need a coat&rdquo; &mdash; she is handed the real current conditions for the location below and answers from them in her own words. Source is Open-Meteo: free, no account, no key. Applies on her next reply, no restart.</p>
+    <p class="hint" style="font-size:11px"><b>The location is the whole feature.</b> Get it wrong and this is worse than having no weather at all. It ships set to Kaysville, Utah (ZIP 84037). To move it, look up the coordinates of the town and paste them here &mdash; south and west are negative. If the network is down or the service is unreachable she is handed <i>nothing</i> and says she does not know, which is deliberate: a stale number sounds just as true as a fresh one.</p>
+    <div class="field-row"><label>Weather source</label><select id="WEATHER_ENABLED"><option value="0">Off</option><option value="1">On</option></select></div>
+    <div class="field-row"><label>Latitude</label><input type="number" id="WEATHER_LAT" step="0.0001" min="-90" max="90"></div>
+    <div class="field-row"><label>Longitude</label><input type="number" id="WEATHER_LON" step="0.0001" min="-180" max="180"></div>
+    <div class="field-row"><label>Time zone (IANA name)</label><input type="text" id="WEATHER_TZ" placeholder="America/Denver"></div>
+    <div class="field-row"><label>Place name (what she calls it)</label><input type="text" id="WEATHER_PLACE" placeholder="Kaysville, Utah"></div>
+    <p class="hint" style="font-size:11px">Handed a temperature with no place attached she makes one up &mdash; measured, she said &ldquo;it&rsquo;s July in Colorado&rdquo;. This is the name she uses out loud, so write it the way you&rsquo;d say it. Change it whenever you change the coordinates above.</p>
+    <div class="field-row"><label>Say so when the feed is down</label><select id="WEATHER_MISS_CLAUSE"><option value="0">Off</option><option value="1">On</option></select></div>
+    <p class="hint" style="font-size:11px">Keep this On. Handed nothing at all she does not stay quiet about it &mdash; measured, she invented a temperature in 18 tries out of 18, none of them close. Told outright that the feed did not answer, she says she does not know. Silence is not honesty here; it just leaves her a gap to fill.</p>
+    <div class="field-row"><label>Re-check the weather every (s)</label><input type="number" id="WEATHER_CACHE_SECS" step="30" min="60" max="3600"></div>
+    <p class="hint" style="font-size:11px">The service itself only updates every 15 minutes, so asking more often than that buys nothing. 600 keeps a follow-up question on the same reading.</p>
+    <div class="field-row"><label>Fetch timeout (s)</label><input type="number" id="WEATHER_TIMEOUT_S" step="0.1" min="0.5" max="10"></div>
+    <p class="hint" style="font-size:11px">This fetch happens before she starts thinking, so it delays the reply. Measured at 0.7 s. Raise it only if you see <code>[WX] fetch failed</code> in <code>journalctl -u assistant</code>.</p>
+    <button class="btn btn-primary" style="margin-top:12px" onclick="saveFields(['WEATHER_ENABLED','WEATHER_LAT','WEATHER_LON','WEATHER_TZ','WEATHER_PLACE','WEATHER_MISS_CLAUSE','WEATHER_CACHE_SECS','WEATHER_TIMEOUT_S'])">Save</button>
+  </div>
+  <div class="card">
     <h2>Response Length Tiers</h2>
     <p class="hint">Token budget per tier. IRIS picks the tier automatically based on the question. Changes take effect on the next response — no restart needed.</p>
     <div class="field-row"><label>SHORT (greeting / yes-no)</label><input type="number" id="NUM_PREDICT_SHORT" step="10" min="10" max="2000"></div>
@@ -164,24 +225,38 @@
     <div class="field-row"><label>MAX (essays / code)</label><input type="number" id="NUM_PREDICT_MAX" step="10" min="10" max="2000"></div>
     <div class="field-row"><label>TTS char cap</label><input type="number" id="TTS_MAX_CHARS" step="50" min="100" max="4000"></div>
     <p class="hint" style="margin-bottom:8px">TTS cap truncates at sentence boundary before synthesis (~5–8 sentences at 900 chars).</p>
-    <button class="btn btn-primary" onclick="saveFields(['NUM_PREDICT_SHORT','NUM_PREDICT_MEDIUM','NUM_PREDICT_LONG','NUM_PREDICT_MAX','TTS_MAX_CHARS'])">Save Tiers</button>
+    <div class="field-row"><label>Story resume window (s)</label><input type="number" id="STORY_RESUME_WINDOW_SECS" step="60" min="0" max="7200"></div>
+    <p class="hint" style="margin-bottom:8px">A story that hits the MAX cap ends on a spoken "say keep going" bridge instead of stopping dead. This is how long that unfinished story survives the context clear so "keep going" still resumes it. 1800 = 30 min. 0 turns resume off.</p>
+    <button class="btn btn-primary" onclick="saveFields(['NUM_PREDICT_SHORT','NUM_PREDICT_MEDIUM','NUM_PREDICT_LONG','NUM_PREDICT_MAX','TTS_MAX_CHARS','STORY_RESUME_WINDOW_SECS'])">Save Tiers</button>
+  </div>
+  <div class="card">
+    <h2>Game Tempo <span class="hint" style="font-size:11px">(S218 — Rock Paper Scissors throw)</span></h2>
+    <p class="hint" style="margin-bottom:12px">These two are ear calls, so they are here to be nudged while you play. Both apply on the next round, no restart.</p>
+    <div class="field-row"><label>Throw beat period (s)</label><input type="number" id="RPS_BEAT_PERIOD_S" step="0.05" min="0.4" max="3.0" style="width:90px"></div>
+    <p class="hint" style="margin-bottom:8px">Seconds from the start of one beat to the start of the next: "Rock" ... "Paper" ... "Scissors" ... "Shoot!". This is the metronome. Lower is a snappier throw, higher is more deliberate. Keep it above about 0.90 or the longest word ("Scissors") runs into the next beat and the rhythm goes uneven.</p>
+    <div class="field-row"><label>Countdown speech rate</label><input type="number" id="GAME_COUNTDOWN_SPEED" step="0.05" min="0.5" max="2.0" style="width:90px"></div>
+    <p class="hint" style="margin-bottom:8px">Kokoro speed for the game countdown only; normal speech stays on the Voice tab's rate. Lower is more deliberate. Raising it shortens each spoken beat, which also buys room to lower the period above.</p>
+    <button class="btn btn-primary" onclick="saveFields(['RPS_BEAT_PERIOD_S','GAME_COUNTDOWN_SPEED'])">Save Game Tempo</button>
+  </div>
+  <div class="card">
+    <h2>Personality</h2>
+    <p class="hint" style="margin-bottom:12px">Center = standard IRIS. Sliders lean the personality for the day; they never replace it. Applies on her next reply, no restart. The third slider is an activity dial, not a chattiness dial: it sets how readily she OFFERS a game or camera play, not how long her replies are or how often she hands the turn back. Games always still start on the usual voice commands.</p>
+    <div class="field-row"><label>Kids mood</label><span class="hint" style="min-width:110px;text-align:right">Calm &amp; gentle</span><input type="range" id="PERSONA_TONE_KIDS" min="0" max="1" step="0.25" style="flex:1"><span class="hint" style="min-width:110px">Silly &amp; cheeky</span></div>
+    <div class="field-row"><label>Adult mood</label><span class="hint" style="min-width:110px;text-align:right">Serious &amp; mellow</span><input type="range" id="PERSONA_TONE_ADULT" min="0" max="1" step="0.25" style="flex:1"><span class="hint" style="min-width:110px">Playful &amp; spiky</span></div>
+    <div class="field-row"><label>Games &amp; activities</label><span class="hint" style="min-width:110px;text-align:right">Waits to be asked</span><input type="range" id="PERSONA_ENGAGE" min="0" max="1" step="0.25" style="flex:1"><span class="hint" style="min-width:110px">Suggests constantly</span></div>
+    <button class="btn btn-primary" onclick="saveFields(['PERSONA_TONE_KIDS','PERSONA_TONE_ADULT','PERSONA_ENGAGE'])">Save Personality</button>
+    <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="resetPersonality()">Reset to standard</button>
   </div>
 </div>
 
 <!-- EYES -->
 <div class="section" id="sec-eyes">
   <div class="card">
-    <h2>Eye Style</h2>
+    <h2>Eye Style <span class="hint" style="font-size:11px">(1.28" TFT 240x240, GC9A01)</span></h2>
     <p class="hint" style="margin-bottom:12px">Sends EYE:n to Teensy. All styles selectable; emotions temporarily override flame &amp; hypnoRed.</p>
-    <div class="eyes-grid">
-      <button class="btn-eye" onclick="sendTeensy('EYE:0')">0 - Nordic Blue</button>
-      <button class="btn-eye" onclick="sendTeensy('EYE:1')">1 - Flame</button>
-      <button class="btn-eye" onclick="sendTeensy('EYE:2')">2 - Hypno Red</button>
-      <button class="btn-eye" onclick="sendTeensy('EYE:3')">3 - Hazel</button>
-      <button class="btn-eye" onclick="sendTeensy('EYE:4')">4 - Blue Flame 1</button>
-      <button class="btn-eye" onclick="sendTeensy('EYE:5')">5 - Dragon</button>
-      <button class="btn-eye" onclick="sendTeensy('EYE:6')">6 - Striking Blue</button>
-    </div>
+    <!-- S241: populated from _EYE_NAMES in iris_web.js so the list can never
+         fall behind the firmware's eyeDefinitions array again. -->
+    <div class="eyes-grid" id="eye-style-grid"></div>
     <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <span style="color:var(--muted);font-size:13px">Default eye on startup:</span>
       <select id="default-eye-sel" style="background:#1a1a2e;border:1px solid var(--border);color:var(--fg);padding:5px 8px;border-radius:4px;font-size:13px">
@@ -217,7 +292,8 @@
   <div class="card">
     <h2>Emotion Display Mapping</h2>
     <p class="hint" style="margin-bottom:4px">Assign eye style and mouth style per emotion. Saved to <code>iris_config.json</code>; used by the assistant and by Emotion Test buttons above.</p>
-    <p class="hint" style="margin-bottom:12px">Note: ANGRY always shows Flame and CONFUSED always shows Hypno Red during the emotion (firmware timer ~9s/7s). The eye setting here controls which eye is sent beforehand and where the display reverts.</p>
+    <p class="hint" style="margin-bottom:4px">Note: ANGRY always shows Flame and CONFUSED always shows Hypno Red during the emotion (firmware timer ~9s/7s). The eye setting here controls which eye is sent beforehand and where the display reverts.</p>
+    <p class="hint" style="margin-bottom:12px"><b>Eyelid Effect</b> is the eyelid choreography baked into T4.1 firmware for each emotion (ANNOYED is the narrowed squeeze, EXASPERATED the eye-roll). It is shown here for reference and is <b>not editable from this page</b>: the envelopes are compiled into the firmware and there is no serial command to retune them. Making them editable needs a firmware <code>LID_CFG:</code> command plus a flash (ROADMAP RD-069). <b>Requires firmware S241 or later</b>: check the Teensy version on the System tab, and if it still reads S213 the lid effects, the ANNOYED/EXASPERATED tags and eye indices above 6 are not running yet.</p>
     <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse">
         <thead>
@@ -225,6 +301,7 @@
             <th style="text-align:left;padding:4px 8px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)">Emotion</th>
             <th style="text-align:left;padding:4px 8px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)">Eye Style</th>
             <th style="text-align:left;padding:4px 8px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)">Mouth Style</th>
+            <th style="text-align:left;padding:4px 8px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)">Eyelid Effect (firmware)</th>
             <th style="padding:4px 8px;border-bottom:1px solid var(--border)"></th>
           </tr>
         </thead>
@@ -282,7 +359,7 @@
     </div>
     <div class="field-row">
       <label>Sleep intensity (0–15)</label>
-      <input type="range" id="MOUTH_INTENSITY_SLEEP_F" min="0" max="15" step="1" value="1"
+      <input type="range" id="MOUTH_INTENSITY_SLEEP_F" min="0" max="15" step="1" value="5"
              style="width:180px;accent-color:var(--indigo);height:6px;cursor:pointer"
              oninput="document.getElementById('mouth-sleep-display-f').textContent=this.value">
       <span id="mouth-sleep-display-f" style="width:24px;color:var(--text);font-size:13px;flex-shrink:0">1</span>
@@ -308,7 +385,19 @@
       </div>
     </div>
     <p class="hint">Sleep: starfield on both eyes, snore mouth animation, reduced LED brightness. Wake restores eyes + NEUTRAL emotion. State syncs with voice commands and cron schedule.</p>
-    <p class="hint" style="margin-top:6px">Auto-schedule: Sleep at 9:00 PM / Wake at 7:30 AM (cron)</p>
+    <p class="hint" style="margin-top:6px">Auto-schedule: Sleep at 9:00 PM / Wake at 7:00 AM (cron)</p>
+  </div>
+
+  <!-- Quiet break (S202) -->
+  <div class="card">
+    <h2>Quiet Break <span class="hint" style="font-size:11px">(do-not-disturb, by voice)</span></h2>
+    <p class="hint" style="margin-bottom:12px">Say "hey iris" then "take a break", "bugger off" or "shut the front door". She acknowledges, sleeps her eyes, breathes amber, and ignores the wakeword for the whole window. When it expires she wakes herself and asks whether to resume. The button on her base ends it early, or use Cancel below. Applies to the next break, no restart.</p>
+    <div class="field-row"><label>Break duration (s)</label><input type="number" id="BREAK_DURATION_SECS" step="60" min="10" max="7200" style="width:100px"></div>
+    <p class="hint" style="margin-bottom:8px">1200 = 20 minutes.</p>
+    <div class="field-row"><label>Resume question timeout (s)</label><input type="number" id="BREAK_CONFIRM_TIMEOUT_SECS" step="1" min="2" max="30" style="width:100px"></div>
+    <p class="hint" style="margin-bottom:8px">How long she listens for a yes or no after "shall I resume?". Silence counts as yes.</p>
+    <button class="btn btn-primary" onclick="saveFields(['BREAK_DURATION_SECS','BREAK_CONFIRM_TIMEOUT_SECS'])">Save Quiet Break</button>
+    <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="sendTeensy('BREAK:CANCEL')">Cancel break now</button>
   </div>
 
   <!-- TFT Mouth Intensity -->
@@ -331,7 +420,7 @@
     </div>
     <div class="field-row">
       <label>Sleep intensity (0–15)</label>
-      <input type="range" id="MOUTH_INTENSITY_SLEEP" min="0" max="15" step="1" value="1"
+      <input type="range" id="MOUTH_INTENSITY_SLEEP" min="0" max="15" step="1" value="5"
              style="width:180px;accent-color:var(--indigo);height:6px;cursor:pointer"
              oninput="document.getElementById('mouth-sleep-display').textContent=this.value">
       <span id="mouth-sleep-display" style="width:24px;color:var(--text);font-size:13px;flex-shrink:0">1</span>
@@ -388,10 +477,11 @@
   </div>
   <div class="card">
     <h2>APA102 — Kids Mode (yellow breathe)</h2>
-    <p class="hint">Active in kids mode. Changes take effect after restarting the assistant.</p>
+    <p class="hint">Active in kids mode. Changes take effect after restarting the assistant (or the next time the idle breathe starts). <strong>S201:</strong> the kids idle breathe now uses the same cadence (period 5.0s) and floor as the adult cyan idle — only the hue (yellow) differs.</p>
     <div class="field-row"><label>Peak brightness (0–255)</label><input type="number" id="LED_KIDS_PEAK" step="1" min="0" max="255"></div>
+    <div class="field-row"><label>Floor brightness (0–255)</label><input type="number" id="LED_KIDS_FLOOR" step="1" min="0" max="255"></div>
     <div class="field-row"><label>Cycle period (s)</label><input type="number" id="LED_KIDS_PERIOD" step="0.5" min="1" max="30"></div>
-    <button class="btn btn-primary" onclick="saveFields(['LED_KIDS_PEAK','LED_KIDS_PERIOD'])">Save Kids LEDs</button>
+    <button class="btn btn-primary" onclick="saveFields(['LED_KIDS_PEAK','LED_KIDS_FLOOR','LED_KIDS_PERIOD'])">Save Kids LEDs</button>
   </div>
 </div>
 
@@ -399,12 +489,16 @@
 <div class="section" id="sec-gandalf">
   <div class="card">
     <h2>Ollama Models</h2>
+    <p class="hint" style="margin-bottom:10px">These are Ollama <em>tags</em>, not model names. Each one is an IRIS personality layered on top of a general-purpose language model. The line under each field says which model that tag actually resolves to on GandalfAI right now, read live from Ollama and never typed in by hand.</p>
     <div class="field-row"><label>Adult model</label><input type="text" id="OLLAMA_MODEL_ADULT" style="width:200px"></div>
+    <div class="field-row"><label></label><span id="gm-adult" style="color:var(--muted);font-size:12px">--</span></div>
     <div class="field-row"><label>Kids model</label><input type="text" id="OLLAMA_MODEL_KIDS" style="width:200px"></div>
+    <div class="field-row"><label></label><span id="gm-kids" style="color:var(--muted);font-size:12px">--</span></div>
     <button class="btn btn-primary" onclick="saveFields(['OLLAMA_MODEL_ADULT','OLLAMA_MODEL_KIDS'])">Save Models</button>
   </div>
   <div class="card">
     <h2>Loaded Models (VRAM)</h2>
+    <p class="hint" style="margin-bottom:10px">What GandalfAI is holding in GPU memory right now, each tag shown with the model it is built on. The GB figures are real resident VRAM. On disk the picture is different: every <code style="color:var(--blue)">iris*</code> tag points at the same shared weights file, so a spare staging tag costs kilobytes, not another 14 GB.</p>
     <button class="btn btn-sm" style="margin-bottom:10px;background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="loadVram()">Refresh</button>
     <div class="vram-box" id="vram-box">Click refresh to load...</div>
   </div>
@@ -452,6 +546,22 @@
     <div style="margin-top:12px;display:flex;gap:8px">
       <button class="btn btn-primary" onclick="restartAssistant()">Restart IRIS Assistant</button>
       <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="pollStatus()">Refresh Status</button>
+    </div>
+  </div>
+  <!-- Versions / About (RD-048, S213) -->
+  <div class="card">
+    <h2>Versions / About</h2>
+    <p class="hint" style="margin-bottom:12px">Every value is self-reported by the live component (firmware boot banners, live file hashes, live model digests), never hand-typed. Green = live and matching, amber = stale or pre-versioning report, red = unknown/mismatch.</p>
+    <div class="field-row"><label>T4.1 eyes firmware</label><span id="ver-eyes" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>T4.0 servo firmware</label><span id="ver-servo" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>Serial protocol (fw/pi)</label><span id="ver-proto" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>Pi4 code (md5)</label><span id="ver-pi4" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>Adult LLM</label><span id="ver-llm-adult" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>Kids LLM</label><span id="ver-llm-kids" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>Other iris tags</label><span id="ver-llm-other" style="color:var(--muted)">--</span></div>
+    <div class="field-row"><label>Kokoro voice</label><span id="ver-kokoro" style="color:var(--muted)">--</span></div>
+    <div style="margin-top:10px">
+      <button class="btn btn-sm" style="background:var(--input-bg);border:1px solid var(--border);color:var(--text)" onclick="pollVersion()">Refresh</button>
     </div>
   </div>
   <!-- Resource Monitor (RD-032) -->
@@ -583,7 +693,7 @@
   <!-- Turn Latency (RD-007 S158) -->
   <div class="card">
     <h2>Turn Latency</h2>
-    <p class="hint" style="margin-bottom:10px">Last 20 turns — wakeword to first speaker output (ms), from <code style="color:var(--blue)">iris_bench.jsonl</code>. Auto-refreshes every 30 s with the Bench tab.</p>
+    <p class="hint" style="margin-bottom:10px">Last 20 turns — wakeword to first speaker output (s), from <code style="color:var(--blue)">iris_bench.jsonl</code>. Auto-refreshes every 30 s with the Bench tab.</p>
     <canvas id="lt-spark" width="320" height="50" style="width:100%;max-width:340px;height:50px;background:var(--input-bg);border:1px solid var(--border);border-radius:4px"></canvas>
     <div id="lt-breakdown" style="font-size:12px;color:var(--muted);margin-top:6px">—</div>
   </div>
@@ -638,6 +748,13 @@
     <h2>Gesture Sensor Mapping</h2>
     <p class="hint">PAJ7620U2 gesture events (Teensy 4.0, /dev/ttyIRIS_SERVO). Map each gesture to an action. Changes take effect immediately — no restart needed.</p>
     <p class="hint" style="margin-top:4px;margin-bottom:12px">Basic gestures: swipe direction. Extended gestures: push/pull toward sensor, rotate wrist CW/CCW.</p>
+    <div class="field-row" style="margin-top:4px;margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:12px">
+      <label><b>Gesture sensing</b></label>
+      <select id="gesture-enabled" onchange="saveGestureConfig()">
+        <option value="true">Enabled</option>
+        <option value="false">Disabled — ignore all gestures</option>
+      </select>
+    </div>
     <div class="field-row" style="margin-top:4px">
       <label>VOL+ (swipe up)</label>
       <select id="gesture-VOL+"></select>
@@ -673,6 +790,50 @@
     <button class="btn btn-primary" style="margin-top:14px" onclick="saveGestureConfig()">Save Gesture Config</button>
   </div>
   <div class="card">
+    <h2>Voice Barge-in Commands <span class="hint" style="font-size:11px">(interrupt IRIS while she's talking)</span></h2>
+    <p class="hint">Spoken commands recognized <b>during playback</b> — no "Hey IRIS" needed. Vosk (offline, fast) listens for a fixed vocabulary and maps each phrase to an action. Changes apply on IRIS's next spoken reply — no restart. Shout-to-stop always works even when disabled.</p>
+    <div class="field-row" style="margin-top:8px">
+      <label>Barge-in listening</label>
+      <select id="bargein-enabled">
+        <option value="true">Enabled</option>
+        <option value="false">Disabled — shout-to-stop only</option>
+      </select>
+    </div>
+    <div class="field-row">
+      <label>Recognition engine</label>
+      <select id="bargein-engine">
+        <option value="vosk">Vosk — fast, offline (recommended)</option>
+        <option value="whisper">Whisper — slower fallback</option>
+      </select>
+    </div>
+    <div id="bargein-grammar-rows" style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px"></div>
+    <p class="hint" style="margin-top:8px;font-size:11px">Phrases are fixed (must be words the offline recognizer knows). Set any to "Disabled" to drop it from the vocabulary.</p>
+    <div class="field-row"><label>Detect ×bleed (adult)</label><input type="number" id="bargein-mult" step="0.1" min="1" max="5" style="width:80px"></div>
+    <p class="hint" style="font-size:11px">How far above her own speaker bleed your voice must sit before she treats it as an interruption. <b>Raise it if she cuts herself off</b> mid-reply (the S203 fault); lower it if she is hard to interrupt. Applies on her next spoken reply, no restart.</p>
+    <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+      <p class="hint" style="font-size:11px"><b>Kids mode</b> (S199): the vocabulary shrinks to "stop" / "be quiet" (no volume phrases — kids shouting along were ratcheting the volume), detection needs a louder voice, and matches in the guard window right after IRIS starts talking are ignored as talk-along.</p>
+      <div class="field-row"><label>Kids detect ×bleed</label><input type="number" id="kids-bargein-mult" step="0.1" min="1" max="10" style="width:80px"></div>
+      <div class="field-row"><label>Kids guard window (s)</label><input type="number" id="kids-bargein-guard" step="0.1" min="0" max="5" style="width:80px"></div>
+    </div>
+    <button class="btn btn-primary" style="margin-top:12px" onclick="saveBargeinConfig()">Save Voice Commands</button>
+  </div>
+  <div class="card">
+    <h2>Echo Cancellation (AEC) <span class="hint" style="font-size:11px">(S214 — talk over her at normal volume)</span></h2>
+    <p class="hint">Software echo cancellation removes IRIS's OWN speaker sound from the mic, so a <b>conversational-volume</b> voice can interrupt her (no shouting, no wake word) and her own voice can no longer self-decode a stop. <b>Default OFF</b> — turning it On changes barge-in on her next spoken reply, no restart. If cancellation is ever unsure it silently reverts to today's shout-to-stop behavior. Watch Logs for an <code>[AEC] active</code> line (it took effect) and a per-reply <code>[AEC] frames=… erle_avg=…</code> summary; <code>erle_avg</code> above ~3&nbsp;dB means it's cancelling. Ear-test checklist: <code>HANDOFF_CURRENT.md</code>.</p>
+    <div class="field-row"><label>Echo cancellation (AEC)</label><select id="BARGEIN_AEC_ENABLED"><option value="0">Off</option><option value="1">On</option></select></div>
+    <div class="field-row"><label>Clean-feed gate ×residual</label><input type="number" id="AEC_DETECT_MULT" step="0.1" min="1" max="5" style="width:80px"></div>
+    <div class="field-row"><label>Clean-feed floor (min RMS)</label><input type="number" id="AEC_MIN_FLOOR" step="100" min="200" max="20000" style="width:90px"></div>
+    <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+      <p class="hint" style="font-size:11px"><b>Presence tier</b>: sustained talking over her (not a grammar word) fires a stop. Only active once AEC is on and has converged; <b>off in kids mode by default</b> so a child talking along never cuts her.</p>
+      <div class="field-row"><label>Presence tier</label><select id="BARGEIN_PRESENCE_ENABLED"><option value="0">Off</option><option value="1">On</option></select></div>
+      <div class="field-row"><label>Presence gate ×feed floor</label><input type="number" id="BARGEIN_PRESENCE_MULT" step="0.1" min="1" max="10" style="width:80px"></div>
+      <div class="field-row"><label>Presence sustain (ms)</label><input type="number" id="BARGEIN_PRESENCE_MS" step="50" min="100" max="5000" style="width:90px"></div>
+      <div class="field-row"><label>Presence in kids mode</label><select id="BARGEIN_PRESENCE_KIDS"><option value="0">Off (protect talk-along)</option><option value="1">On</option></select></div>
+    </div>
+    <div class="field-row" style="margin-top:10px"><label>AEC debug log ([AEC-DBG])</label><select id="AEC_DEBUG"><option value="0">Off</option><option value="1">On</option></select></div>
+    <button class="btn btn-primary" style="margin-top:12px" onclick="saveFields(['BARGEIN_AEC_ENABLED','AEC_DETECT_MULT','AEC_MIN_FLOOR','BARGEIN_PRESENCE_ENABLED','BARGEIN_PRESENCE_MULT','BARGEIN_PRESENCE_MS','BARGEIN_PRESENCE_KIDS','AEC_DEBUG'])">Save AEC Settings</button>
+  </div>
+  <div class="card">
     <h2>Gesture Event Log</h2>
     <p class="hint" style="margin-bottom:10px">PAJ7620U2 events from Teensy 4.0 (/dev/ttyIRIS_SERVO). Newest events at top. History persists across reboots via SD daily logs.</p>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
@@ -693,8 +854,8 @@
 
   <!-- Person Sensor live status (T4.1 eye-tracking sensor health/activity) -->
   <div class="card">
-    <h2>Person Sensor Status <span class="hint" style="font-size:11px">(T4.1 eye tracking — live)</span></h2>
-    <p class="hint" style="margin-bottom:10px">Live health + face-tracking activity of the Teensy 4.1 Person Sensor (the sole eye-tracking source). Derived from the Teensy's I2C probe results and FACE:1/FACE:0 reports. <b>ABSENT</b> means the sensor is not answering on the I2C bus (loose/dead) — eyes cannot track until it is reseated.</p>
+    <h2>Gaze Sensor Status <span class="hint" style="font-size:11px">(T4.1 eye tracking, live)</span></h2>
+    <p class="hint" style="margin-bottom:10px">Live health and face-tracking activity of the Teensy 4.1 gaze sensor, the sole eye-tracking source. Since S212 that is a <b>DFRobot SEN0626</b> on Serial4 (pins 16/17, Modbus RTU over UART), standing in for the discontinued Useful Sensors Person Sensor. Derived from the Teensy's own probe results and its FACE:1/FACE:0 reports. <b>ABSENT</b> means the sensor is not answering on its UART: loose wiring, an undervolted sensor, or the onboard DIP switch left in I2C mode. Eyes cannot track until it answers.</p>
     <div class="ps-status-row">
       <span id="ps-status-dot" class="ps-dot ps-dot-unknown"></span>
       <span id="ps-status-label" style="font-weight:600">Loading…</span>
@@ -714,17 +875,20 @@
   <!-- Sensor LED indicators (liveness) -->
   <div class="card">
     <h2>Sensor LED Indicators <span class="hint" style="font-size:11px">(liveness check)</span></h2>
-    <p class="hint" style="margin-bottom:12px">Turn on a Person Sensor's on-board indicator LED. Lighting it is an I2C write to the sensor, so <b>a lit LED proves that sensor is powered and reachable on its bus</b> — the most direct alive/dead test for these irreplaceable sensors. Both LEDs ship disabled in firmware; toggling here is live and persisted to SD.</p>
-    <div class="field-row">
+    <p class="hint" style="margin-bottom:12px">Turn on a Person Sensor's on-board indicator LED. Lighting it is an I2C write to the sensor, so <b>a lit LED proves that sensor is powered and reachable on its bus</b>, the most direct alive/dead test for these irreplaceable sensors. The LED ships disabled in firmware; toggling here is live and persisted to SD.</p>
+    <div class="field-row" style="opacity:.55">
       <label>Eyes sensor LED (Teensy 4.1)</label>
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="ps-led-eyes" onchange="setEyesLed(this.checked)"> light on</label>
-      <span id="ps-led-eyes-ack" class="hint" style="font-size:11px">—</span>
+      <label style="display:flex;align-items:center;gap:6px;cursor:not-allowed"><input type="checkbox" id="ps-led-eyes" onchange="setEyesLed(this.checked)" disabled> light on</label>
+      <span id="ps-led-eyes-ack" class="hint" style="font-size:11px">n/a</span>
     </div>
+    <p class="hint" style="margin:-4px 0 12px;padding:8px 10px;border-left:3px solid var(--border);background:var(--input-bg);font-size:11px">
+      <b>Disabled since S212.</b> The T4.1 now runs a DFRobot SEN0626, which has <b>no indicator-LED register at all</b> (confirmed against DFRobot's wiki and library). The firmware call is a no-op, so this toggle could only ever report success while lighting nothing. It is disabled rather than removed because the I2C Person Sensor rollback path (<code>USE_PERSON_SENSOR_I2C</code> in <code>src/config.h</code>) restores a real LED. <b>Liveness for the eyes sensor now comes from the Gaze Sensor Status card above</b> (PRESENT/ABSENT), not from a lamp. The servo row below is a real Person Sensor and still works.
+    </p>
     <div class="field-row">
       <label>Servo / base sensor LED (Teensy 4.0)</label>
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="ps-led-servo" onchange="setServoLed(this.checked)"> light on</label>
     </div>
-    <p class="hint" id="ps-led-note" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">Both LEDs ship disabled in firmware; toggling here is live and persisted to SD. The eyes (T4.1) row shows the Teensy's own acknowledgement of the last value it actually received — if that confirmation is missing or stale after a toggle, the write didn't reach the Teensy (check the serial link); if it's present but the physical LED still doesn't respond, the sensor itself isn't reachable on its I2C bus.</p>
+    <p class="hint" id="ps-led-note" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">The servo / base sensor (Teensy 4.0) is still a real Useful Sensors Person Sensor on I2C, so its LED remains a genuine liveness proof: if it lights, that sensor is powered and reachable on its bus. It ships disabled in firmware; toggling here is live and persisted to SD. The eyes (T4.1) row is disabled (see above): the SEN0626 has no LED to light, and its liveness is reported by the Gaze Sensor Status card instead.</p>
   </div>
 
   <!-- Person Sensor Config (T4.1 Person Sensor — live PS_CFG serial, S141) -->
@@ -743,6 +907,57 @@
 
 </div>
 
+<div class="section" id="sec-kids">
+  <div class="card">
+    <h2>Kids Mode</h2>
+    <p class="hint">Kids mode swaps IRIS to the <code>iris-kids</code> persona, the kids
+      recording thresholds, the yellow LED breathe, and the never-silent re-ask lines.
+      It turns itself off after <code>KIDS_MODE_INACTIVITY_TIMEOUT</code> (30 min) of
+      silence. Kids can also say <em>"iris kids mode"</em> or <em>"play with me"</em>.</p>
+    <div class="field-row">
+      <label>Kids mode</label>
+      <select id="kids-mode-sel" onchange="saveKidsMode()">
+        <option value="0">Off (adult)</option>
+        <option value="1">On</option>
+      </select>
+      <span id="kids-mode-state" class="hint" style="margin-left:10px"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Kids Profile &mdash; the notebook</h2>
+    <p class="hint">This is the "little notebook Dad keeps" that IRIS tells the children
+      about. It is folded into every kids-mode turn so she is interested in
+      <strong>these</strong> children specifically. One interest per line. Saves to RAM + SD
+      and applies on the next turn &mdash; no restart.</p>
+    <div id="kids-profile-rows"></div>
+    <button class="btn" onclick="addKidRow()">+ Add child</button>
+    <button class="btn btn-primary" onclick="saveKidsProfile()">Save Profile</button>
+  </div>
+
+  <div class="card">
+    <h2>Kids Turn Timing</h2>
+    <p class="hint">Applies on the next turn &mdash; no restart. Recording thresholds
+      (<code>KIDS_RECORD_SECONDS</code>, <code>KIDS_SILENCE_SECS</code>,
+      <code>KIDS_SILENCE_RMS</code>) live on the <strong>Audio</strong> tab; the kids
+      follow-up window is on <strong>Conversation</strong>; the kids model is on
+      <strong>Gandalf AI</strong>.</p>
+    <div class="field-row"><label>Endpoint "got it" cue</label>
+      <select id="KIDS_ENDPOINT_CUE"><option value="1">On</option><option value="0">Off</option></select></div>
+    <div class="field-row"><label>Thinking gap fillers</label>
+      <select id="KIDS_GAP_FILLERS"><option value="1">On</option><option value="0">Off</option></select></div>
+    <div class="field-row"><label>First filler after (s)</label><input type="number" id="KIDS_THINK_FILLER_MS" step="0.1" min="0.3" max="5"></div>
+    <div class="field-row"><label>Second filler after (s, 0=off)</label><input type="number" id="KIDS_THINK_FILLER2_MS" step="0.5" min="0" max="20"></div>
+    <div class="field-row"><label>"Your turn" cue + face</label>
+      <select id="KIDS_FOLLOWUP_CUE"><option value="1">On</option><option value="0">Off</option></select></div>
+    <div class="field-row"><label>Spoken mode-off sign-off</label>
+      <select id="KIDS_MODE_OFF_SPOKEN"><option value="1">On</option><option value="0">Off</option></select></div>
+    <div class="field-row"><label>Auto-off after idle (s)</label><input type="number" id="KIDS_MODE_INACTIVITY_TIMEOUT" step="300" min="300"></div>
+    <div class="field-row"><label>Carry-forward memory (exchanges, 0=off)</label><input type="number" id="KIDS_HISTORY_TURNS" step="1" min="0" max="20"></div>
+    <button class="btn btn-primary" onclick="saveFields(['KIDS_ENDPOINT_CUE','KIDS_GAP_FILLERS','KIDS_THINK_FILLER_MS','KIDS_THINK_FILLER2_MS','KIDS_FOLLOWUP_CUE','KIDS_MODE_OFF_SPOKEN','KIDS_MODE_INACTIVITY_TIMEOUT','KIDS_HISTORY_TURNS'])">Save Kids Timing</button>
+  </div>
+</div>
+
 <div class="section" id="sec-soundboard">
   <div class="card">
     <h2>Soundboard — Quips &amp; Clips</h2>
@@ -759,7 +974,26 @@
   </div>
 </div>
 
+<!-- Click popover for field definitions (S222). Body is filled from CFG_MAP
+     in iris_defs.js: never hardcode definition text here. Click, not hover,
+     because the WebUI is used from a phone and hover does not exist on touch. -->
+<div id="defpop" onclick="if(event.target===this)closeDef()"
+     style="display:none;position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.55)">
+  <div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+              width:min(92vw,460px);max-height:76vh;overflow:auto;background:var(--card);
+              border:1px solid var(--border);border-radius:10px;padding:16px 18px">
+    <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
+      <div id="defpop-title" style="flex:1;color:var(--blue);font-weight:600;font-size:14px"></div>
+      <span onclick="closeDef()" style="cursor:pointer;color:var(--muted);font-size:18px;line-height:1">&#10005;</span>
+    </div>
+    <div id="defpop-body" style="color:var(--text);font-size:13px;line-height:1.55"></div>
+    <div id="defpop-meta" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);
+                                 color:var(--muted);font-size:11.5px;font-family:ui-monospace,monospace"></div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
+<script src="/iris_defs.js"></script>
 <script src="/iris_web.js"></script>
 <script src="/soundboard.js"></script>
 </body>

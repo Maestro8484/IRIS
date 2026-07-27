@@ -33,6 +33,56 @@ def extract_emotion_from_reply(raw: str) -> tuple:
     return "NEUTRAL", raw.strip()
 
 
+def _strip_asides(text: str) -> str:
+    """Remove parenthetical stage directions, counting depth instead of matching.
+
+    S224e: the old r'\\s*\\([^)]*\\)' needed an OPEN and a CLOSE in the same string,
+    and three real shapes do not have that. Verified by executing the deployed
+    function, not by reading it:
+
+      unclosed   "That was fun. (Note to self: add that to the"  -- the num_predict
+                 guillotine lands inside the aside, so nothing ever closes it and
+                 the whole fragment was spoken, brackets included.
+      nested     "(Note (a side note) to self: do it.)" -- the inner pair matched
+                 and was deleted, leaving "to self: do it.)" to be spoken. Same
+                 corruption class as the S222 asterisk bug: a regex that cannot see
+                 the pair it is inside eats the wrong span.
+      split      a multi-sentence aside arrives here already cut in half by
+                 _split_sentences, so each half carries one lone bracket. That one
+                 is fixed at the splitter (see _split_sentences); the depth scan
+                 covers what still reaches here.
+
+    Depth counting handles all three. An unmatched OPEN drops to end of string,
+    because everything after it is inside an aside she never closed. An unmatched
+    CLOSE drops only the character -- deleting the text before it would risk eating
+    a real sentence, and a lone ')' is inaudible noise rather than spoken words.
+    """
+    out = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch == '(':
+            if depth == 0:
+                # keep what came before, minus the space the aside was sitting
+                # behind, so "Hello. (aside) World" closes up to "Hello. World"
+                out.append(text[start:i].rstrip())
+                start = i
+            depth += 1
+        elif ch == ')':
+            if depth > 0:
+                depth -= 1
+                if depth == 0:
+                    start = i + 1          # drop the whole aside
+            else:
+                out.append(text[start:i])  # stray close: drop the character only
+                start = i + 1
+    if depth == 0:
+        out.append(text[start:])
+    # depth > 0: an aside was opened and never closed, so everything from its
+    # opening bracket to the end of the reply is dropped with it.
+    return ''.join(out)
+
+
 def clean_llm_reply(text: str) -> str:
     """
     Strip markdown artifacts from LLM output.
@@ -43,14 +93,33 @@ def clean_llm_reply(text: str) -> str:
     # Strip *multi-word action phrases* and _multi-word phrases_ entirely --
     # removes stage directions while preserving single-word emphasis
     # (e.g. *very* survives to the char-strip below as just "very")
-    text = re.sub(r'\*[^*]*\s+[^*]*\*', '', text)
-    text = re.sub(r'_[^_]*\s+[^_]*_', '', text)
+    #
+    # S222: the old pattern was r'\*[^*]*\s+[^*]*\*' and it CORRUPTED replies.
+    # Because [^*]* cannot cross an asterisk, that pattern could not match a
+    # pair of SINGLE-word emphases -- so the engine slid forward and matched the
+    # GAP BETWEEN two pairs instead, deleting the real sentence text in between.
+    # Measured on a live S221 reply: "how I *feel* when I *do* this, which *is* a
+    # test" was spoken as "how I feeldois a test". It also ate one half of a
+    # bracket pair, leaving an orphaned ")" for the paren strip below to miss.
+    # Fix: match a PROPER pair, then decide by content. Multi-word -> drop (the
+    # stage-direction case, behavior unchanged). Single word -> keep the word.
+    _drop_if_multiword = lambda m: '' if re.search(r'\s', m.group(1)) else m.group(1)
+    text = re.sub(r'\*([^*\n]+)\*', _drop_if_multiword, text)
+    text = re.sub(r'_([^_\n]+)_', _drop_if_multiword, text)
+    # Parenthetical asides / notes. This is a voice interface -- the persona is told
+    # "nothing in brackets describing what you are doing" -- so "(Note to self: ...)"
+    # or "(if Ava is speaking, ...)" is an artifact that must NEVER be spoken. Same
+    # class as the *action* / _action_ stage directions stripped just above. S201B:
+    # iris-kids, told it cannot tell which child is speaking, occasionally emitted a
+    # tailoring note that both leaked a child's name and would have been read aloud.
+    text = _strip_asides(text)
     # Ellipsis: normalize unicode "…" to ASCII dots first. Kokoro renders "..." as a
     # measured pause, so keep it (collapse any run of 2+ dots to exactly three). Piper
     # verbalizes "..." as "dot dot dot", so collapse to a single period when Kokoro is
     # disabled (Piper-primary configs). (S167)
     text = text.replace('…', '...')
-    text = re.sub(r'\.{2,}', '...' if KOKORO_ENABLED else '.', text)
+    import core.config as _cfg          # live, not the frozen import (RD-047 follow-up)
+    text = re.sub(r'\.{2,}', '...' if _cfg.KOKORO_ENABLED else '.', text)
     text = re.sub(r'[*_#`]', '', text)
     text = re.sub(r'^[-=]{3,}\s*$', '', text, flags=re.MULTILINE)
     # Strip triple-dash separator and trailing meta-comment that follows it
@@ -90,6 +159,23 @@ def clean_llm_reply(text: str) -> str:
 _MAX_SAFE_CHUNK = 200
 
 
+def _last_pause_outside_aside(buf: str) -> int:
+    """Index of the last ', ' or '; ' that is not inside an open parenthetical.
+
+    -1 when there is none, which the caller already treats as "hold the buffer".
+    """
+    depth = 0
+    best = -1
+    for i, ch in enumerate(buf):
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth = max(0, depth - 1)
+        elif depth == 0 and ch in ',;' and buf[i + 1:i + 2] == ' ':
+            best = i
+    return best
+
+
 def _split_sentences(text: str) -> list:
     """
     Split text on sentence boundaries (.!?) followed by whitespace or end of string.
@@ -99,7 +185,30 @@ def _split_sentences(text: str) -> list:
     # Negative lookbehind keeps an ellipsis (".." / "...") intact within one chunk so
     # Kokoro renders its trailing pause, instead of fragmenting it into choppy separate
     # synths. Single-period sentence ends still split normally. (S167)
-    parts = re.split(r'(?<=[.!?])(?<!\.\.)\s+', text.strip())
+    #
+    # S224e: a sentence end INSIDE an open parenthetical is not a boundary. The old
+    # re.split cut "Right. (Note: This is not a joke request. I am being serious.)"
+    # into two chunks with one lone bracket each, and clean_llm_reply -- which runs
+    # per chunk on the streaming path and can only match a pair -- then spoke the
+    # whole aside aloud. Measured on the deployed functions before the fix. Holding
+    # the aside together lets the existing strip do its job.
+    text = text.strip()
+    depth_at = []
+    _d = 0
+    for _ch in text:
+        if _ch == '(':
+            _d += 1
+        elif _ch == ')':
+            _d = max(0, _d - 1)
+        depth_at.append(_d)
+    parts = []
+    _pos = 0
+    for _m in re.finditer(r'(?<=[.!?])(?<!\.\.)\s+', text):
+        if _m.start() and depth_at[_m.start() - 1]:
+            continue                       # inside an aside: not a boundary
+        parts.append(text[_pos:_m.start()])
+        _pos = _m.end()
+    parts.append(text[_pos:])
     result = []
     carry = ""
     for part in parts:
@@ -112,7 +221,51 @@ def _split_sentences(text: str) -> list:
     return [r for r in result if r.strip()]
 
 
-def stream_ollama(messages: list, model: str, num_predict: int):
+# ── num_predict guillotine (S227) ────────────────────────────────────────────
+#
+# A reply that hits num_predict stops mid-word. Measured 2026-07-22: seven
+# replies ended on "he's getting better at", "Now then", "you've got in", with
+# no closing punctuation. S217 built a spoken bridge for this but wired it to
+# the story tier, and it could not have fixed the cut anyway: the done frame
+# below flushed the whole residual buffer BEFORE writing done_reason, so the
+# fragment was already synthesized and spoken by the time any caller could know
+# the reply had been guillotined.
+#
+# The rule is tier-agnostic on purpose. Truncation is a property of the stream,
+# not of the tier, so MEDIUM, LONG, MAX, kids and vision follow-ups all get it.
+
+_TERMINAL_PUNCT = ".!?…"
+
+
+def _ends_complete(text: str) -> bool:
+    """True if a chunk ends on real sentence-final punctuation. Closing quotes
+    and brackets may follow it. An ellipsis counts (_split_sentences keeps one
+    intact, and she uses it deliberately); a trailing dash or comma does not."""
+    t = (text or "").rstrip().rstrip('"\'’”)]}')
+    return bool(t) and t[-1] in _TERMINAL_PUNCT
+
+
+def _drop_guillotined_tail(chunks: list, done_reason: str,
+                           anything_yielded: bool) -> tuple:
+    """Pure: decide what of the final flush is safe to speak.
+
+    Returns (chunks_to_speak, dropped_or_None). Only a "length" stop drops
+    anything, and only an unterminated LAST chunk. If dropping it would leave
+    her having said nothing at all, it is kept -- a clipped word is bad, silence
+    in reply to a question is worse.
+    """
+    if done_reason != "length" or not chunks:
+        return chunks, None
+    if _ends_complete(chunks[-1]):
+        return chunks, None
+    kept = chunks[:-1]
+    dropped = chunks[-1]
+    if not kept and not anything_yielded:
+        return chunks, None
+    return kept, dropped
+
+
+def stream_ollama(messages: list, model: str, num_predict: int, meta: dict = None):
     """
     Stream sentence-boundary chunks from Ollama /api/chat with stream=True.
 
@@ -123,6 +276,10 @@ def stream_ollama(messages: list, model: str, num_predict: int):
 
     Caller assembles full reply from chunks for history and followup detection.
     Raises RuntimeError on connection or HTTP failure so caller can handle gracefully.
+
+    meta (S217): optional caller-owned dict. On stream completion it receives
+    done_reason ("stop" = natural end, "length" = num_predict guillotine) so the
+    caller can tell a finished reply from a token-budget truncation.
     """
     url = f"http://{GANDALF}:{OLLAMA_PORT}/api/chat"
     payload = {
@@ -181,14 +338,26 @@ def stream_ollama(messages: list, model: str, num_predict: int):
                 done = data.get("done", False)
 
                 if done:
-                    # Flush all remaining buffer as final chunks
-                    parts = _split_sentences(buffer)
-                    for p in parts:
-                        cleaned = clean_llm_reply(p)
-                        if cleaned:
-                            out_emotion = emotion if first_yield else None
-                            first_yield = False
-                            yield cleaned, out_emotion
+                    # S227: read the stop reason BEFORE flushing. It used to be
+                    # written after, so the mid-word fragment was already spoken
+                    # by the time a caller could see "length".
+                    _done_reason = data.get("done_reason", "")
+                    if meta is not None:
+                        meta["done_reason"] = _done_reason
+                    # Flush remaining buffer as final chunks. Clean first, then
+                    # judge completeness on what would actually be SPOKEN --
+                    # cleaning drops unclosed asides and can change the ending.
+                    _final = [c for c in (clean_llm_reply(p)
+                                          for p in _split_sentences(buffer)) if c]
+                    _final, _dropped = _drop_guillotined_tail(
+                        _final, _done_reason, not first_yield)
+                    if _dropped is not None:
+                        print(f"[LLM]  num_predict guillotine at {num_predict} -- "
+                              f"dropped {len(_dropped)} unterminated chars", flush=True)
+                    for cleaned in _final:
+                        out_emotion = emotion if first_yield else None
+                        first_yield = False
+                        yield cleaned, out_emotion
                     buffer = ""
                     _e_tok = data.get("eval_count", 0)
                     _p_tok = data.get("prompt_eval_count", 0)
@@ -210,7 +379,10 @@ def stream_ollama(messages: list, model: str, num_predict: int):
                     elif len(buffer) > _MAX_SAFE_CHUNK:
                         # Comma/semicolon fallback: buffer is one very long partial
                         # sentence — yield at the last natural pause rather than hold.
-                        idx = max(buffer.rfind(', '), buffer.rfind('; '))
+                        # depth-aware, for the same reason the sentence splitter is
+                        # (S224e): breaking at a comma INSIDE an aside hands the
+                        # stripper two lone brackets and the aside gets spoken.
+                        idx = _last_pause_outside_aside(buffer)
                         if idx > _MAX_SAFE_CHUNK // 3:
                             chunk_text = buffer[:idx + 1].strip()
                             buffer = buffer[idx + 2:].lstrip()
@@ -282,7 +454,29 @@ _MAX_PATTERNS = (
     "tell me everything", "everything about", "complete guide",
     "full explanation", "write a long", "write me a long", "write a detailed",
     "essay",
+    # explicit story continuations (S217) -- unambiguous references to an
+    # in-flight story get the full story budget even without resume state
+    "keep telling the story", "continue the story", "keep the story going",
+    "finish the story", "rest of the story", "more of the story",
+    "next part of the story", "back to the story",
 )
+
+
+# S217: bare continuation phrases. Too ambiguous for _MAX_PATTERNS on their own
+# ("keep going" mid-explanation is not a story), so assistant.py only consults
+# is_story_continuation() while a truncated story is pending (_story_resume).
+_STORY_CONTINUE_PATTERNS = (
+    "keep going", "keep telling", "go on", "carry on", "continue",
+    "what happens next", "then what", "what happened next",
+    "next part", "don't stop", "and then", "tell me more", "more story",
+    "finish it", "the rest",
+)
+
+
+def is_story_continuation(text: str) -> bool:
+    """True if the utterance reads as 'continue the story you were telling'."""
+    t = text.lower().strip()
+    return any(p in t for p in _STORY_CONTINUE_PATTERNS)
 
 
 def classify_response_length(text: str,
@@ -326,8 +520,20 @@ def classify_response_length(text: str,
     if any(t.startswith(p) or t == p for p in _SHORT_PATTERNS):
         return _short
 
-    # Heuristic: questions under 6 words with no complexity signals -> short
-    if word_count <= 5 and t.endswith("?"):
+    # Heuristic: questions under 6 words with no complexity signals -> short.
+    # S227 REPAIR: this branch has never once fired. t is rstripped of ".!?,;:"
+    # at the top of the function, so t.endswith("?") is unreachable and every
+    # short question fell through to MEDIUM. Test the RAW utterance, which is
+    # what it was always written to do. Measured 2026-07-22: "What's the capital
+    # of Australia?" was handed a 224-token budget and used 28.
+    if word_count <= 5 and text.strip().endswith("?"):
+        return _short
+
+    # S227: a bare reaction is not a request for content. "Fuck off.", "so",
+    # "Oh" and "You're an idiot." all routed MEDIUM and got 224 tokens to fill.
+    # Measured the same day: 41 of 47 turns routed MEDIUM, 2 routed SHORT.
+    # Anything genuinely wanting length has already matched MAX or LONG above.
+    if word_count <= 3:
         return _short
 
     # Heuristic: question word present and moderate length -> medium
@@ -338,3 +544,188 @@ def classify_response_length(text: str,
 
     # Default: medium
     return _medium
+
+
+def apply_speed_bias(num_predict: int, speed: str) -> int:
+    """
+    S221 (trajectory Phase 2, DARK behind TRAJECTORY_ENABLED): nudge the tier
+    verdict by the conversation's speed vector. Only the default MEDIUM verdict
+    ever moves -- explicit verdicts (story MAX, LONG asks, SHORT lookups) always
+    win over trajectory. Reads live config (not frozen imports) so WebUI tier
+    edits keep applying (RD-047).
+      speed "expansive" (Nth consecutive engaged turn): MEDIUM -> LONG
+      speed "quip" (monosyllabic user reply):           MEDIUM -> SHORT
+    """
+    import core.config as _cfg
+    if num_predict == _cfg.NUM_PREDICT_MEDIUM:
+        if speed == "expansive":
+            return _cfg.NUM_PREDICT_LONG
+        if speed == "quip":
+            return _cfg.NUM_PREDICT_SHORT
+    return num_predict
+
+
+# ── selftest: offline, no GPU, no network ────────────────────────────────────
+#
+# S224e. Gates the stage-direction repair. Run it on the Pi, where core.config
+# imports cleanly. PYTHONPATH is required and is not decoration: this module does
+# `from core.config import ...` at import time, and running the file directly puts
+# services/ on sys.path instead of /home/pi, so core.* would not resolve.
+#
+#     cd /home/pi && PYTHONPATH=/home/pi python3 services/llm.py --selftest
+#
+# The cases are the ones that were MEASURED failing on the deployed functions,
+# plus the ones that were already passing, because a fix that changes what
+# already worked is a regression however good it looks on the failure.
+
+def _selftest():
+    ran, fails = [], []
+
+    def check(label, cond):
+        ran.append(label)
+        print("%-62s %s" % (label, "PASS" if cond else "FAIL"))
+        if not cond:
+            fails.append(label)
+
+    def spoken(reply):
+        """What actually reaches TTS on the streaming path: stream_ollama splits
+        into sentences FIRST and cleans each chunk independently, so a per-chunk
+        stripper is the thing under test, not clean_llm_reply on a whole reply."""
+        return " ".join(c for c in (clean_llm_reply(p) for p in _split_sentences(reply)) if c)
+
+    # ── the three shapes that were leaking (measured, not assumed) ────────────
+    multi = "Right. (Note: This is not a joke request. I am being serious here.) Rest and ice."
+    check("multi-sentence aside is not spoken",
+          "(" not in spoken(multi) and "joke request" not in spoken(multi))
+    check("multi-sentence aside keeps the real sentences",
+          spoken(multi) == "Right. Rest and ice.")
+
+    qmark = "Fine. (Should I write that down? Probably.) Anyway."
+    check("aside containing a question mark is not spoken",
+          spoken(qmark) == "Fine. Anyway.")
+
+    unclosed = "That was fun. (Note to self: add that to the"
+    check("unclosed aside (num_predict guillotine) is not spoken",
+          spoken(unclosed) == "That was fun.")
+
+    nested = "Good. (Note (a side note) to self: do it.) Done."
+    check("nested aside is dropped whole, not half",
+          spoken(nested) == "Good. Done.")
+
+    # ── what already worked and must keep working ────────────────────────────
+    kids = ("Oh! No idea -- but that's because Dad hasn't jotted it down yet. "
+            "Tell me the best bit.\n\n(Note to self: add to notebook.)")
+    check("the observed iris-kids note is still stripped",
+          "Note to self" not in spoken(kids) and "Tell me the best bit." in spoken(kids))
+    check("single-word emphasis still survives",
+          clean_llm_reply("That is *very* good.") == "That is very good.")
+    check("multi-word stage direction in asterisks still goes",
+          clean_llm_reply("*leans forward* Right.") == "Right.")
+    check("the S222 two-pair case is still correct",
+          clean_llm_reply("how I *feel* when I *do* this") == "how I feel when I do this")
+    check("plain text is untouched",
+          spoken("Hello there. How are you?") == "Hello there. How are you?")
+    check("empty in, empty out", clean_llm_reply("") == "" and _split_sentences("") == [])
+
+    # ── the pieces, directly ─────────────────────────────────────────────────
+    check("_strip_asides closes the gap left behind",
+          _strip_asides("Hello. (aside) World") == "Hello. World")
+    check("_strip_asides drops a stray close bracket only",
+          _strip_asides("Hello) World") == "Hello World")
+    check("_strip_asides leaves bracket-free text alone",
+          _strip_asides("Hello World") == "Hello World")
+    # The aside survives as ONE chunk, so clean_llm_reply sees a matched pair and
+    # can strip it. Before the fix this split into "Right then." + "(Note: one."
+    # + "Two.) All good here." and the middle two were spoken with their brackets.
+    check("_split_sentences does not break inside an aside",
+          _split_sentences("Right then. (Note: one. Two.) All good here.")
+          == ["Right then.", "(Note: one. Two.) All good here."])
+    check("_split_sentences still breaks normally outside one",
+          _split_sentences("One. Two. Three.") == ["One. Two.", "Three."])
+    check("_split_sentences keeps an ellipsis intact",
+          _split_sentences("Wait... I remember that one.") == ["Wait... I remember that one."])
+    check("comma fallback ignores a comma inside an aside",
+          _last_pause_outside_aside("aaa (bb, cc) dd, ee") == 15)
+    check("comma fallback returns -1 when every pause is inside one",
+          _last_pause_outside_aside("aaa (bb, cc) dd") == -1)
+
+    # ── S227: the num_predict guillotine ─────────────────────────────────────
+    #
+    # The seven tails below are the VERBATIM endings of the seven replies that
+    # hit eval_tokens=224 on 2026-07-22, read out of the journal. Each one was
+    # spoken as-is. None of them may ever be spoken again.
+
+    check("terminal punctuation is complete", _ends_complete("Right then."))
+    check("question mark is complete", _ends_complete("What's that?"))
+    check("closing quote after a stop is complete", _ends_complete('He said "no."'))
+    check("ellipsis is complete", _ends_complete("Well... maybe."))
+    check("a bare word is not complete", _ends_complete("Now then") is False)
+    check("a trailing comma is not complete", _ends_complete("first, then") is False)
+    check("a trailing dash is not complete", _ends_complete("he was going to-") is False)
+    check("empty is not complete", _ends_complete("") is False and _ends_complete("   ") is False)
+
+    _MEASURED_TAILS = (
+        "You can show an AI every picture of a cat you've got in",
+        "It's like they took the best bits of Roman administration and",
+        "It means you're letting the fact",
+        "It doesn't work",
+        "What's really got you stuck tonight",
+        "Now then",
+        "Then we dealt with Ben's maths homework because he's getting better at",
+    )
+    for _tail in _MEASURED_TAILS:
+        _kept, _drop = _drop_guillotined_tail(["A finished sentence.", _tail],
+                                              "length", True)
+        check("measured tail dropped: %r" % _tail[-28:],
+              _kept == ["A finished sentence."] and _drop == _tail)
+
+    check("a natural stop drops nothing, even unterminated",
+          _drop_guillotined_tail(["Fine.", "Now then"], "stop", True)
+          == (["Fine.", "Now then"], None))
+    check("a complete last sentence survives a length stop",
+          _drop_guillotined_tail(["Fine.", "All done."], "length", True)
+          == (["Fine.", "All done."], None))
+    check("an empty flush is a no-op",
+          _drop_guillotined_tail([], "length", True) == ([], None))
+    # Silence is worse than a clipped word: if the fragment is the ONLY thing
+    # she said this turn, it is kept and spoken.
+    check("the only chunk in the whole reply is kept",
+          _drop_guillotined_tail(["Now then"], "length", False)
+          == (["Now then"], None))
+    check("but it is dropped once something was already spoken",
+          _drop_guillotined_tail(["Now then"], "length", True) == ([], "Now then"))
+
+    # ── S227: tier routing ───────────────────────────────────────────────────
+    from core.config import (NUM_PREDICT_SHORT as _S, NUM_PREDICT_MEDIUM as _M,
+                             NUM_PREDICT_LONG as _L, NUM_PREDICT_MAX as _X)
+
+    # The four the operator named, plus the two the journal added.
+    for _u in ("Oh", "What?", "You're an idiot.", "Fuck off.", "so", "What's wrong?"):
+        check("bare reaction -> SHORT: %r" % _u,
+              classify_response_length(_u) == _S)
+    check("short question -> SHORT (the repaired branch)",
+          classify_response_length("What's the capital of Australia?") == _S)
+
+    # What must NOT move. Six of the seven capped replies came from utterances
+    # in this shape; they route MEDIUM correctly and the guillotine fix, not
+    # routing, is what protects them.
+    for _u in ("nothing I was just thinking about how robots work",
+               "back up so you're talking about the Roman Empire",
+               "I think you're hallucinating. Is that accurate?",
+               "What do you see right now?"):
+        check("stays MEDIUM: %r" % _u[:34], classify_response_length(_u) == _M)
+    check("explicit story still MAX",
+          classify_response_length("tell me a story about a dragon") == _X)
+    check("explain still LONG", classify_response_length("explain gravity") == _L)
+    check("four-word story ask still beats the reaction rule",
+          classify_response_length("tell me a story") == _X)
+
+    print("\n%d/%d PASS" % (len(ran) - len(fails), len(ran)))
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    import sys as _sys
+    if "--selftest" in _sys.argv:
+        _sys.exit(_selftest())
+    print("usage: python3 services/llm.py --selftest")

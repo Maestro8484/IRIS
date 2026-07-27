@@ -107,13 +107,15 @@ td.tfix{font-size:.85em;color:var(--green)}
   <div class="h-logo">IRIS</div>
   <div>
     <div class="h-title">Help Guide</div>
-    <div class="h-sub">Interactive Robot Intelligence System — S144 Operator Reference</div>
+    <div class="h-sub">Interactive Robot Intelligence System: S199 Operator Reference</div>
   </div>
   <a href="/" class="back-btn">← Control Panel</a>
 </header>
 
 <div class="quicknav">
+  <a href="/guide" style="border-color:var(--accent2);color:var(--accent2);font-weight:600">&#9654; Demo &amp; Interaction Guide</a>
   <a href="#overview">Overview</a>
+  <a href="#kids">Kids Mode</a>
   <a href="#architecture">Architecture</a>
   <a href="#pipeline">Pipeline</a>
   <a href="#personality">Personality &amp; Affect</a>
@@ -129,6 +131,12 @@ td.tfix{font-size:.85em;color:var(--green)}
 <section id="overview">
   <h2>What Is IRIS?</h2>
   <div id="div-overview"></div>
+</section>
+
+<section id="kids">
+  <h2>Kids Mode: Family Guide</h2>
+  <div class="callout callout-info">The parent-and-child walkthrough: how to switch IRIS into kids mode, what every sound and face means, how to play the games, and what to expect at night. Read the signal table together. It is written for the kids.</div>
+  <div id="div-kids"></div>
 </section>
 
 <section id="architecture">
@@ -165,7 +173,7 @@ td.tfix{font-size:.85em;color:var(--green)}
 </section>
 
 <section id="madloop">
-  <h2>MAD Loop — Engineering Workflow</h2>
+  <h2>MAD Loop: Engineering Workflow</h2>
   <div id="div-madloop"></div>
 </section>
 
@@ -185,13 +193,14 @@ td.tfix{font-size:.85em;color:var(--green)}
   <div class="pop-body" id="pop-body"></div>
 </div>
 
+<script src="/iris_defs.js"></script>
 <script>
 /* =========================================================
-   IRIS Help Guide — data-driven content
+   IRIS Help Guide: data-driven content
    ─────────────────────────────────────────────────────────
    HOW TO EDIT:
      • Add a glossary definition → add to GLOSSARY below
-     • Add a config key → add one row to CFG_MAP
+     • Add a config key → add one row to CFG_MAP in iris_defs.js
      • Add a troubleshoot case → add one object to TROUBLE
      • Add an innovation card → add one object to INNOVATIONS
    All rendering is done by generic functions. No HTML surgery needed.
@@ -199,54 +208,53 @@ td.tfix{font-size:.85em;color:var(--green)}
 
 /* ── Glossary ─────────────────────────────────────────── */
 const GLOSSARY = {
-"MAD Loop":"Multi-Agent Adversarial Dev Loop — IRIS's engineering review workflow. Significant changes are reviewed by at least two AI systems (Claude + ChatGPT, optionally Codex) independently before implementation. Each AI sees the problem cold and critiques the other's plan. Final authority belongs to the human operator. After 168 sessions this has caught false hardware-state assumptions, serial protocol mistakes, and scope creep before they hit the live system.",
+"MAD Loop":"Multi-Agent Adversarial Dev Loop: IRIS's engineering review workflow. Significant changes are reviewed by at least two AI systems (Claude + ChatGPT, optionally Codex) independently before implementation. Each AI sees the problem cold and critiques the other's plan. Final authority belongs to the human operator. After 195 sessions this has caught false hardware-state assumptions, serial protocol mistakes, and scope creep before they hit the live system.",
 "overlayfs":"The Pi4 runs a union/overlay filesystem. All writes to /home/pi/ land in a RAM layer by default and are wiped on reboot. To survive a reboot, every deployed file must be explicitly copied to the SD card layer at /media/root-ro. The WebUI 'Persist to SD' button does this. Failure mode: S63 had an 8-hour display outage because a udev rules file was written to RAM only and vanished on reboot.",
-"udev symlink":"Linux device naming bound to USB hardware serial numbers, not port positions. /dev/ttyIRIS_EYES always points to Teensy 4.1 (serial 13625440) and /dev/ttyIRIS_SERVO always points to Teensy 4.0 (serial 12763490), regardless of which USB port they're plugged into. Eliminates the 'ttyACM0 is now ttyACM1 after a cable swap' failure mode that caused silent serial misrouting (confirmed S63).",
-"TeensyBridge":"The single-owner serial interface to Teensy 4.1 (hardware/teensy_bridge.py). All commands to the eyes and mouth go through this bridge. Other code communicates via UDP → 127.0.0.1:10500 and the bridge forwards them. No other process may open /dev/ttyIRIS_EYES directly — doing so causes serial port conflicts and silent command drops.",
-"Person Sensor":"Useful Sensors Person Sensor at I2C address 0x62, on the Teensy 4.1 bus. Detects faces and provides bounding box coordinates used for eye tracking. Face-ID LED and illumination LED are both disabled (enableID/enableLED false). Self-healing re-probe retries isPresent() every 1s if missed at boot. Root cause of the S135 false-dead diagnosis: hotglue crept into the connector pins; resolved S140 by cleaning the pins.",
-"OWW":"OpenWakeWord — wakeword detection engine running on Pi4. Listens continuously for 'hey IRIS'. OWW_THRESHOLD is the confidence gate; higher = fewer false positives but harder to trigger. Currently 0.70 (raised from 0.50, S149 model) after false wakes on the operator's voice — the custom hey_iris.tflite was trained only on adult synthetic speech, so kids' voices trigger it less reliably at this threshold; a kid-voice retrain is under investigation. OWW_DRAIN_SECS flushes audio after detection before recording begins to prevent the wakeword phrase from bleeding into the transcript.",
-"RPQR":"Rapid Pre-cached Quip Response — short audio clips (time-of-day greetings, acknowledgment sounds) pre-synthesized by Kokoro at startup and held as PCM in memory. Played instantly on wakeword — before GandalfAI has even received the request. Eliminates perceived wake latency. Also lets IRIS respond to wakewords during sleep mode without needing Ollama to be warm.",
-"Kokoro TTS":"Primary text-to-speech engine. Runs as a Docker container on GandalfAI (port 8004). Voice: \"M\" blend bf_lily(0.8)+bm_george(0.2) (authoritative British female). Configured via KOKORO_VOICE and KOKORO_SPEED. If Kokoro fails, Pi4 falls through to Piper. Kokoro produces higher-quality, more natural speech than Piper.",
+"udev symlink":"Linux device naming bound to USB hardware serial numbers, not port positions. /dev/ttyIRIS_EYES always points to Teensy 4.1 (serial YOUR-T41-SERIAL) and /dev/ttyIRIS_SERVO always points to Teensy 4.0 (serial YOUR-T40-SERIAL), regardless of which USB port they're plugged into. Eliminates the 'ttyACM0 is now ttyACM1 after a cable swap' failure mode that caused silent serial misrouting (confirmed S63).",
+"TeensyBridge":"The single-owner serial interface to Teensy 4.1 (hardware/teensy_bridge.py). All commands to the eyes and mouth go through this bridge. Other code communicates via UDP → 127.0.0.1:10500 and the bridge forwards them. No other process may open /dev/ttyIRIS_EYES directly. Doing so causes serial port conflicts and silent command drops.",
+"Person Sensor":"IRIS uses two different face sensors, one per Teensy. The HEAD-PAN sensor on the Teensy 4.0 is still a Useful Sensors Person Sensor on I2C at address 0x62. The EYE-TRACKING sensor on the Teensy 4.1 was swapped at S212 to a DFRobot SEN0626 on a UART (Serial4, RX pin 16 / TX pin 17, 9600 baud) because the original part is discontinued. Both report a face bounding box; the eyes and the head read them independently. The SEN0626 has no LED register, so the eye sensor lost its LED liveness test, and DFRobot documents a detection floor of about half a meter. Root cause of the S135 false-dead diagnosis on the original sensor: hotglue crept into the connector pins; resolved S140 by cleaning them.",
+"OWW":"OpenWakeWord: wakeword detection engine running on Pi4. Listens continuously for 'hey IRIS'. OWW_THRESHOLD is the confidence gate; higher = fewer false positives but harder to trigger. Currently 0.75 live (code default 0.65; raised in steps from 0.50, S149 model) after false wakes on the operator's voice. The custom hey_iris.tflite was trained only on adult synthetic speech, so kids' voices trigger it less reliably at this threshold; a kid-voice retrain is under investigation. OWW_DRAIN_SECS flushes audio after detection before recording begins to prevent the wakeword phrase from bleeding into the transcript.",
+"RPQR":"Rapid Pre-cached Quip Response: short audio clips (time-of-day greetings, acknowledgment sounds) pre-synthesized by Kokoro at startup and held as PCM in memory. Played instantly on wakeword, before GandalfAI has even received the request. Eliminates perceived wake latency. Also lets IRIS respond to wakewords during sleep mode without needing Ollama to be warm.",
+"Kokoro TTS":"Primary text-to-speech engine. Runs as a Docker container on GandalfAI (port 8004). Voice: \"M\" blend bf_lily(0.8)+bf_emma(0.2) (authoritative British female). Configured via KOKORO_VOICE and KOKORO_SPEED. If Kokoro fails, Pi4 falls through to Piper. Kokoro produces higher-quality, more natural speech than Piper.",
 "Piper TTS":"Fallback TTS engine. Wyoming Piper Docker container on GandalfAI (port 10200), voice en_US-ryan-high. Used when Kokoro is unavailable. Simpler sound but reliable. Voice configurable via PIPER_VOICE in core/config.py (not in WebUI).",
 "Whisper STT":"Speech-to-text. Wyoming Whisper running faster-whisper-large-v3-turbo on GandalfAI (port 10300). Pi4 records the audio after the wakeword, sends the WAV over TCP to Wyoming Whisper, and receives the transcript. Model is fixed inside the Docker image.",
 "Ollama":"Open-source LLM inference server running on GandalfAI (port 11434). Hosts the 'iris' and 'iris-kids' model personas built on mistral-small3.2:24b. The modelfile defines the personality, stop tokens, and sampling parameters. keep_alive=8h keeps the 15GB model warm across the active day.",
-"mistral-small3.2:24b":"Current base LLM (since S119). 24B parameters, Q4 quantization, ~15GB VRAM. 100% GPU on RTX 3090. Includes Pixtral vision capability baked in — no separate vision model needed for camera queries. Generation speed ~46 tok/s (measured warm, S168). Vision cold-after-text load: ~2.4s.",
-"num_ctx":"Ollama context window size — how many tokens the model can 'see' at once. Currently 6144 (unified text+vision, raised from 4096 in S119b). Vision queries consume ~4570 tokens for a camera frame, so num_ctx must be ≥6144 or Ollama returns HTTP 400. Raising it increases VRAM — current total (model+Kokoro) is 17/24GB.",
-"num_predict":"Token budget for a single LLM response — how many tokens Ollama will generate before stopping. IRIS uses a tiered system (SHORT/MEDIUM/LONG/MAX) chosen automatically per query type. Each token ≈ 0.23s of speech at current model speed. Configured via NUM_PREDICT_* keys.",
+"mistral-small3.2:24b":"Current base LLM (since S119). 24B parameters, Q4 quantization, ~15GB VRAM. 100% GPU on RTX 3090. Includes Pixtral vision capability baked in. No separate vision model needed for camera queries. Generation speed ~46 tok/s (measured warm, S168). Vision cold-after-text load: ~2.4s.",
+"num_ctx":"Ollama context window size: how many tokens the model can 'see' at once. Currently 6144 (unified text+vision, raised from 4096 in S119b). Vision queries consume ~4570 tokens for a camera frame, so num_ctx must be ≥6144 or Ollama returns HTTP 400. Raising it increases VRAM: current total (model+Kokoro) is 17/24GB.",
+"num_predict":"Token budget for a single LLM response: how many tokens Ollama will generate before stopping. IRIS uses a tiered system (SHORT/MEDIUM/LONG/MAX) chosen automatically per query type. Each token ≈ 0.23s of speech at current model speed. Configured via NUM_PREDICT_* keys.",
 "streaming pipeline":"S116 feature: instead of waiting for the full LLM response, IRIS splits output at sentence boundaries and starts synthesizing and playing each sentence as it arrives. First audio latency dropped from ~23s (old: generate all → synthesize all → play) to ~1.5s (new: first sentence generates → synthesize → play while rest generates; measured thinking→first-audio, S168). STOP interrupt halts dispatch within one sentence boundary.",
-"sentence boundary":"The streaming TTS pipeline splits LLM output at .!? punctuation marks. Each complete sentence is sent to Kokoro as a separate synthesis request. TTS_MAX_CHARS is enforced cumulatively — synthesis stops at the first sentence boundary at or past the character limit. Prevents mid-word cutoffs on truncated long responses.",
+"sentence boundary":"The streaming TTS pipeline splits LLM output at .!? punctuation marks. Each complete sentence is sent to Kokoro as a separate synthesis request. TTS_MAX_CHARS is enforced cumulatively: synthesis stops at the first sentence boundary at or past the character limit. Prevents mid-word cutoffs on truncated long responses.",
 "wm8960":"Audio codec chip on the Pi4 HAT. Handles both microphone input (LINPUT1 channel, 16kHz) and speaker output. Controlled via ALSA amixer. SPEAKER_VOLUME sets the startup level (range 60–127, default 121 ≈ 95%). alsa-init.sh sets all 6 critical switches on every boot.",
 "APA102":"SPI-addressable RGB LED strip used for IRIS's ambient lighting. Two brightness controls: 8-bit per-channel (color) and 5-bit global brightness register. During sleep: slow indigo breathe animation. During listen/idle: cyan breathe. During kids mode: yellow. Configured via LED_* keys.",
 "ILI9341":"2.8\" TFT display used as the mouth. Driven by Teensy 4.1 via SPI. Shows animated mouth shapes during speech, word animations during reactions, and a starfield during sleep. Backlight brightness controlled by GPIO 5 PWM via BL_MAP lookup table (0–15 levels, config keys MOUTH_INTENSITY_*).",
-"GC9A01A":"1.28\" round TFT displays used as the eyes (×2). Driven by Teensy 4.1 via two separate SPI buses. Run the TeensyEyes animated eye renderer with independently composited sclera, iris, pupil, and eyelid layers. Eye gaze direction driven by Person Sensor face coordinates.",
-"OGLE":"OGLE ESP32-S3 vision node (DFRobot FireBeetle 2 DFR0975 + OV2640 camera) — deployed as the RD-033 workaround when the Person Sensor was thought dead. Person Sensor was restored S140 (root cause: hotglue pin creep). OGLE bridge is still deployed and running but inert — Pi4 assistant ignores GAZE: commands. Available as fallback if sensor fails again. Separate repo: ../OGLE.",
-"iris_config.json":"Live runtime config on Pi4 at /home/pi/iris_config.json. Written by the WebUI; read at startup and per-call by assistant.py. Changes survive assistant restarts but NOT reboots without Persist to SD. Has a goldbak copy for emergency recovery. Never edit this file directly — use the WebUI.",
+"GC9A01A":"1.28\" round TFT displays used as the eyes (×2). Driven by Teensy 4.1 via two separate SPI buses. Run the TeensyEyes animated eye renderer with independently composited sclera, iris, pupil, and eyelid layers. Eye gaze direction driven by the Teensy 4.1 gaze sensor (a DFRobot SEN0626 since S212).",
+"OGLE":"OGLE ESP32-S3 vision node: a retired experiment. Deployed as the RD-033 workaround when the Person Sensor was thought dead; the Person Sensor was restored S140 (root cause: hotglue pin creep) and ALL OGLE code was removed from IRIS at S184 (bridge, udev rule, WebUI cards, API routes). The Person Sensor on the Teensy 4.1 is the sole gaze source. The planned successor gaze node is CyclopsGaze (separate repo, not yet integrated).",
+"iris_config.json":"Live runtime config on Pi4 at /home/pi/iris_config.json. Written by the WebUI; read at startup and per-call by assistant.py. Changes survive assistant restarts but NOT reboots without Persist to SD. Has a goldbak copy for emergency recovery. Never edit this file directly; use the WebUI.",
 "keep_alive":"Ollama parameter controlling how long a loaded model stays resident in VRAM after the last request (default: 5 min). Set to 8h in IRIS (S134) so the 15GB model stays warm across the full active day. Without this, any pause longer than 5 minutes triggers a ~10–20s cold reload on the next request.",
-"TTS_MAX_CHARS":"Hard character limit before TTS synthesis stops (default 2400). Enforced cumulatively across the streaming pipeline — stops dispatching sentences at the first sentence boundary at or past this count. Prevents multi-minute LLM stories from rendering in full. ~100s of speech at typical pace.",
+"TTS_MAX_CHARS":"Hard character limit before TTS synthesis stops (default 4000, S217). Enforced cumulatively across the streaming pipeline: stops dispatching sentences at the first sentence boundary at or past this count. ~4.4 min of speech at typical pace. When a story hits it, IRIS speaks a 'say keep going' bridge and the rest resumes on request.",
 "PS_CFG":"Runtime-tunable Person Sensor configuration protocol added in S141. Pi4 sends PS_CFG:CONF/FACING/LOST_MS/Y_BIAS via serial to the Teensy, which updates running constants without a firmware rebuild. Accessible via WebUI Vision Cal → Person Sensor Config. Firmware must be S141 or later for the handler to exist.",
-"iris-kids":"Kids mode persona — a separate Ollama model (iris-kids) built from the same mistral-small3.2:24b base but with age-appropriate language rules. Activated by the WebUI Kids Mode toggle OR by voice ('switch to kids mode'); exit by voice with 'switch to adult mode' / 'normal mode' / 'exit kids mode' (S144 fixed the voice exit). Uses longer recording/silence windows (KIDS_*), yellow LEDs, and a different modelfile persona. S144 retune: punchier 1–2 sentence replies, always ends on a hook, sound-effect words, offers games by name, and is camera-game aware.",
-"gap fillers":"Kids-mode engagement feature (S144). While IRIS thinks (STT + LLM), a low-attention child hears silence. If the first real audio is slow (later than KIDS_THINK_FILLER_MS, default 1.2s), IRIS plays one short pre-cached playful clip — 'Ooh, good one. Let me think!', 'Beep boop, computing fun stuff!' — over the gap. 10 clips, cached at startup, kids mode only, toggle KIDS_GAP_FILLERS.",
+"iris-kids":"Kids mode persona: a separate Ollama model (iris-kids) built from the same mistral-small3.2:24b base but with age-appropriate language rules. Activated by the WebUI Kids Mode toggle OR by voice ('switch to kids mode'); exit by voice with 'switch to adult mode' / 'normal mode' / 'exit kids mode' (S144 fixed the voice exit). Uses longer recording/silence windows (KIDS_*), yellow LEDs, and a different modelfile persona. S144 retune: punchier 1–2 sentence replies, always ends on a hook, sound-effect words, offers games by name, and is camera-game aware.",
+"gap fillers":"Kids-mode engagement feature (S144). While IRIS thinks (STT + LLM), a low-attention child hears silence. If the first real audio is slow (later than KIDS_THINK_FILLER_MS, default 1.2s), IRIS plays one short pre-cached playful clip ('Ooh, good one. Let me think!', 'Beep boop, computing fun stuff!') over the gap. 10 clips, cached at startup, kids mode only, toggle KIDS_GAP_FILLERS.",
 "gesture cue":"S144. When the hand-gesture sensor recognizes a gesture, IRIS confirms it three ways at once: a spoken word ('Louder!', 'Quieter!', 'Muted.', 'Sound on!'), a TFT mouth pulse (SILLY face), and an LED flash (color per action). The spoken/mouth cues are suppressed while IRIS is mid-sentence (the LED flash and the action itself are feedback enough). Toggles: GESTURE_AUDIO_CUE, GESTURE_MOUTH_CUE.",
-"camera games":"Voice-triggered camera games (S144, made reciprocal in S168) using the Pi camera + vision model — kids mode by default, but they also run in adult mode (only the persona/tone changes). I Spy ('let's play I spy' — IRIS spies an object and gives a color/shape clue; you guess and it reacts and keeps going); Show Me ('guess what I'm holding' — hold an object up and IRIS guesses, then hold up another); Make a Face ('guess my face' — pose and IRIS reads the expression, then make another). S168 changes: a game now sustains up to GAME_FOLLOWUP_TURNS (5) back-and-forth turns without re-saying the wake word; it plays an instant 'Ooh, let me see...' line so there is no dead air while the camera+vision run; it drops the between-turn beep; and for Show Me / Make a Face it re-captures the frame every turn so you can show something new. The wake-quip cascade is also muted for GAME_REENTRY_GRACE_S after a game so a follow-up wakeword does not get a snarky non-sequitur mid-game.",
+"camera games":"Voice-triggered camera games (S144, made reciprocal in S168) using the Pi camera + vision model: kids mode by default, but they also run in adult mode (only the persona/tone changes). I Spy ('let's play I spy': IRIS spies an object and gives a color/shape clue; you guess and it reacts and keeps going); Show Me ('guess what I'm holding': hold an object up and IRIS guesses, then hold up another); Make a Face ('guess my face': pose and IRIS reads the expression, then make another). Rock Paper Scissors ('rock paper scissors': she locks her move in before looking, counts down to SHOOT, and reads your hand); Guess My Drawing ('guess my drawing', S219: hold a drawing up and she guesses it). A game sustains up to GAME_FOLLOWUP_TURNS (10) back-and-forth turns without re-saying the wake word; it plays an instant 'Ooh, let me see...' line so there is no dead air while the camera+vision run; it drops the between-turn beep; and for Show Me / Make a Face it re-captures the frame every turn so you can show something new. The wake-quip cascade is also muted for GAME_REENTRY_GRACE_S after a game so a follow-up wakeword does not get a snarky non-sequitur mid-game. S216 added a real autofocus cycle before every capture (CAMERA_AUTOFOCUS, about 1.7 s per shot; set it False for exact pre-S216 capture behavior) and made Rock Paper Scissors auto-continue between rounds. S216 also made her vision name-blind: the household name roster was removed from the vision prompt because it forced an identification the model cannot make, so she now describes people only by what is visible and never names them.",
 "MOUTHGEST":"S144 firmware serial command. Renders a one-shot SILLY mouth glyph then auto-restores to NEUTRAL after 550ms, fully non-blocking. Gives a crisp firmware-timed gesture acknowledgment on the ILI9341 mouth. The Pi4 also drives an equivalent glyph via a MOUTH:9→MOUTH:0 pulse so gesture mouth feedback works regardless of firmware version.",
-"POST":"Pi4 self-test run at every assistant startup. Checks all critical subsystems: Teensy serial (EYES + SERVO), both Ollama models, Kokoro TTS, Piper TTS, audio. Results logged as PASS/WARN/FAIL. The current authorized baseline is 20/23 PASS, 0 FAIL. Visible in Logs tab.",
+"POST":"Pi4 self-test run at every assistant startup. Checks all critical subsystems: Teensy serial (EYES + SERVO), both Ollama models, Kokoro TTS, Piper TTS, audio. Results logged as PASS/WARN/FAIL. The number of PASS lines shifts between sessions as subsystems are added; the invariant that matters is 0 FAIL. Visible in Logs tab.",
 "highlighted term":"Underlined blue text throughout this guide that you can click to open a definition popup. Click anywhere outside the popup to close it.",
 "EMOTION tag":"The [EMOTION:X] prefix that the LLM generates at the start of every response (e.g. [EMOTION:AMUSED], [EMOTION:ANGRY]). Pi4 strips this before TTS and uses it to simultaneously set the eye display type, LED color, and mouth animation mode. This tag is the real-time bridge between conversational content and physical affect expression across all three display channels at once.",
-"eye type":"The visual style rendered on the Teensy 4.1 eye TFTs — correlated to emotional state. nordicBlue: calm, present, default conversational state. hazel: warm, empathic. bigBlue: open, curious, wide pupils. fire: intense, assertive (ANGRY/EXCITED). Each type has a different sclera color, iris pattern, pupil dilation curve, and eyelid droop (squint). Set by Pi4 via serial commands to Teensy 4.1. The renderer is Chris Miller's TeensyEyes (Adafruit Uncanny Eyes lineage); a Useful Sensors Person Sensor drives live gaze so the eyes track your face — the namesake of IRIS.",
-"paraverbal":"Non-lexical aspects of speech — pace, tone, emphasis, prosody — that carry emotional meaning independent of the words themselves. Kokoro TTS encodes paraverbal qualities through its neural voice model, producing speech that sounds congruent with the emotional state. The combination of lexical content (words), paraverbal delivery (voice), and visual affect (face + LEDs) gives IRIS a richer emotional channel than text-only AI.",
-"inclusive personality":"IRIS's modelfile SYSTEM prompt defines what IRIS IS — direct, sharp, warm, playful, curious, unafraid — rather than listing what it must NOT do (do not apologize, do not break character, do not be sycophantic). Exclusive prohibition lists constrain the LLM's generative latitude for authentic anthropomorphic expression and inadvertently signal the very behaviors they try to prevent. Inclusive framing lets the model's temperature and sampling parameters surface genuine character within a defined space. Grounded in how personality actually forms in interpersonal-neurobiology terms: as characteristic patterns of engagement and affective disposition, not a list of banned behaviors.",
-"affective attunement":"Real-time alignment of IRIS's expressed emotional state with the conversational context — the robot face, voice, and LEDs all shift to reflect what the conversation warrants. When a user expresses frustration, a congruent [EMOTION:AMUSED] or [EMOTION:ANGRY] drives face, voice, and eye type simultaneously. The concept comes from interpersonal neurobiology — the way humans co-regulate through attunement, empathic mirroring, and congruent affect via the brain's social-engagement system. IRIS treats that as an engineering target: read the affective content of a turn, then make the face, voice, and eyes all agree with it.",
-"modelfile SYSTEM":"The Ollama modelfile SYSTEM block that defines IRIS's core personality, communication style, response format, and few-shot calibration examples. The primary personality fidelity layer. Critical: in Ollama's /api/chat endpoint, a request-level system message OVERRIDES the modelfile SYSTEM entirely — stripping IRIS's persona and reverting to generic LLM behavior. This was the root cause of the S134 persona regression ('as an AI assistant...'). Any date/context info must be folded into the user turn, never sent as a system message.",
+"eye type":"The visual style rendered on the Teensy 4.1 eye TFTs. Seven are compiled in: nordicBlue (the default idle eye), flame, hypnoRed, hazel, blueFlame1, dragon and strikingBlue. Two double as emotion swaps: flame for ANGRY and hypnoRed for CONFUSED. The rest are selected from the WebUI rather than driven by mood. Each type has a different sclera color, iris pattern, pupil dilation curve, and eyelid droop (squint). Set by Pi4 via serial commands to Teensy 4.1. The renderer is Chris Miller's TeensyEyes (Adafruit Uncanny Eyes lineage); a face sensor on the Teensy 4.1 drives live gaze so the eyes track your face (the namesake of IRIS).",
+"paraverbal":"Non-lexical aspects of speech (pace, tone, emphasis, prosody) that carry emotional meaning independent of the words themselves. Kokoro TTS encodes paraverbal qualities through its neural voice model, producing speech that sounds congruent with the emotional state. The combination of lexical content (words), paraverbal delivery (voice), and visual affect (face + LEDs) gives IRIS a richer emotional channel than text-only AI.",
+"inclusive personality":"IRIS's modelfile SYSTEM prompt defines what IRIS IS (direct, sharp, warm, playful, curious, unafraid) rather than listing what it must NOT do (do not apologize, do not break character, do not be sycophantic). Exclusive prohibition lists constrain the LLM's generative latitude for authentic anthropomorphic expression and inadvertently signal the very behaviors they try to prevent. Inclusive framing lets the model's temperature and sampling parameters surface genuine character within a defined space. Grounded in how personality actually forms in interpersonal-neurobiology terms: as characteristic patterns of engagement and affective disposition, not a list of banned behaviors.",
+"affective attunement":"Real-time alignment of IRIS's expressed emotional state with the conversational context: the robot face, voice, and LEDs all shift to reflect what the conversation warrants. When a user expresses frustration, a congruent [EMOTION:AMUSED] or [EMOTION:ANGRY] drives face, voice, and eye type simultaneously. The concept comes from interpersonal neurobiology: the way humans co-regulate through attunement, empathic mirroring, and congruent affect via the brain's social-engagement system. IRIS treats that as an engineering target: read the affective content of a turn, then make the face, voice, and eyes all agree with it.",
+"modelfile SYSTEM":"The Ollama modelfile SYSTEM block that defines IRIS's core personality, communication style, response format, and few-shot calibration examples. The primary personality fidelity layer. Critical: in Ollama's /api/chat endpoint, a request-level system message OVERRIDES the modelfile SYSTEM entirely, stripping IRIS's persona and reverting to generic LLM behavior. This was the root cause of the S134 persona regression ('as an AI assistant...'). Any date/context info must be folded into the user turn, never sent as a system message.",
 };
 
 /* ── Architecture nodes ───────────────────────────────── */
 const NODES = [
-  {lbl:"Orchestrator",name:"Pi4",ip:"192.168.1.200",desc:"Voice pipeline, wakeword, mic/audio, LEDs, camera, Teensy serial bridge, web UI (port 8080), cron sleep/wake."},
-  {lbl:"Inference Engine",name:"GandalfAI",ip:"192.168.1.3",desc:"RTX 3090 — Ollama LLM (port 11434), Whisper STT (10300), Kokoro TTS (8004), Piper TTS (10200). All heavy AI runs here."},
-  {lbl:"Display Controller",name:"Teensy 4.1",ip:"USB → Pi4",desc:"Eyes (×2 GC9A01A round TFTs) + mouth (ILI9341 TFT, 10 expression frames + MOUTHGEST gesture glyph). Person Sensor I2C 0x62 for face tracking. Self-healing re-probe. Firmware: S144 live."},
-  {lbl:"Servo Controller",name:"Teensy 4.0",ip:"USB → Pi4",desc:"Pan servo via ServoEasing. PAJ7620U2 gesture sensor (swipes + CW/CCW twist → volume / mute / stop / listen). Each gesture gets a spoken cue + mouth pulse + LED flash. One-way serial to Pi4. Firmware: S97 live."},
+  {lbl:"Orchestrator",name:"Pi4",ip:"192.168.0.10",desc:"Voice pipeline, wakeword, mic/audio, LEDs, camera, Teensy serial bridge, web UI (port 5000), cron sleep/wake."},
+  {lbl:"Inference Engine",name:"GandalfAI",ip:"192.168.0.20",desc:"RTX 3090: Ollama LLM (port 11434), Whisper STT (10300), Kokoro TTS (8004), Piper TTS (10200). All heavy AI runs here."},
+  {lbl:"Display Controller",name:"Teensy 4.1",ip:"USB → Pi4",desc:"Eyes (×2 GC9A01A round TFTs) + mouth (ILI9341 TFT, 10 expression frames + MOUTHGEST gesture glyph). DFRobot SEN0626 gaze sensor on Serial4 for face tracking (S212 swap). Firmware: S213 live."},
+  {lbl:"Servo Controller",name:"Teensy 4.0",ip:"USB → Pi4",desc:"Pan servo via ServoEasing. PAJ7620U2 gesture sensor (swipes + CW/CCW twist → volume / mute / stop / listen). Each gesture gets a spoken cue + mouth pulse + LED flash. One-way serial to Pi4. Person Sensor (I2C 0x62) drives the pan. Firmware: S213 live."},
   {lbl:"Dev & Control",name:"SuperMaster",ip:"(dev PC)",desc:"PlatformIO firmware builds, VS Code, Claude Desktop, git repository. SSH gateway for all deploy operations."},
-  {lbl:"Vision Node (inert)",name:"OGLE",ip:"192.168.1.202",desc:"ESP32-S3 + OV2640. Person Sensor fallback, currently inert. Bridge deployed, assistant ignores GAZE. Separate repo: ../OGLE."},
 ];
 
 /* ── Pipeline stages ──────────────────────────────────── */
@@ -261,86 +269,39 @@ const PIPE = [
   {name:"Face Animate",host:"Pi4→T4.1",sub:"TeensyBridge"},
 ];
 
-/* ── Config map ───────────────────────────────────────── */
-/* [group, key, type, range, default, webui_tab, description] */
-const CFG_MAP = [
-  ["Audio — Recording","RECORD_SECONDS","int","1–60","10","Audio","Max recording window per adult utterance"],
-  ["Audio — Recording","SILENCE_SECS","float","0.1–10.0","1.2","Audio","Silence duration that ends recording. Lower = faster response; too low cuts off slow speech."],
-  ["Audio — Recording","SILENCE_RMS","int","50–5000","300","Audio","RMS floor below which counts as silence. Raise if mic is picking up background noise as silence."],
-  ["Audio — Recording","KIDS_RECORD_SECONDS","int","1–60","14","Audio","Kids mode max record window (longer for slower talkers)."],
-  ["Audio — Recording","KIDS_SILENCE_SECS","float","0.1–15.0","3.5","Audio","Kids silence timeout — children speak more slowly."],
-  ["Audio — Recording","KIDS_SILENCE_RMS","int","50–5000","150","Audio","Kids RMS floor for quieter voices."],
-  ["Kids Engagement","KIDS_GAP_FILLERS","bool","0/1","1","Conversation","S144. Play a short playful 'thinking' clip ('Beep boop, computing fun stuff!') over the silence while IRIS thinks, so a low-attention child stays engaged. Kids mode only."],
-  ["Kids Engagement","KIDS_THINK_FILLER_MS","int","300–5000","1200","Conversation","S144. Only fire a gap-filler if the first real audio is later than this many ms into the turn. Lower = fills shorter gaps; higher = only on genuinely slow replies."],
-  ["Gesture Feedback","GESTURE_AUDIO_CUE","bool","0/1","1","System","S144. Speak a one-word confirmation on each hand gesture ('Louder!', 'Muted.'). Suppressed while IRIS is mid-sentence."],
-  ["Gesture Feedback","GESTURE_MOUTH_CUE","bool","0/1","1","System","S144. Flash the TFT mouth (SILLY face) when a gesture is recognized, alongside the LED flash."],
-  ["Wake Word","OWW_THRESHOLD","float","0.5–1.0","0.70","Wake Word","Confidence gate for wakeword trigger. Higher = fewer false positives, harder to trigger. Raised from 0.50 to 0.70 after false wakes; the trade-off is a custom hey_iris.tflite trained on adult-only synthetic voices, so kids are harder to trigger at this level."],
-  ["Wake Word","OWW_DRAIN_SECS","float","0.05–1.0","0.15","Wake Word","Audio flushed after wakeword before recording starts. Prevents wakeword phrase from bleeding into the transcript."],
-  ["Voice / TTS","KOKORO_ENABLED","bool","—","true","Voice","Use Kokoro as primary TTS. False falls through to Piper."],
-  ["Voice / TTS","KOKORO_VOICE","string","—","bf_lily(0.8)+bm_george(0.2)","Voice","Kokoro voice preset. Live default is the 'M' blend bf_lily(0.8)+bm_george(0.2) (authoritative British female, S167). Parenthesis weights blend voices; a single preset like bm_lewis also works."],
-  ["Voice / TTS","KOKORO_SPEED","float","0.5–2.0","0.9","Voice","Speech rate multiplier. 0.9 = measured/dignified M pace (S167). Re-read per call, no restart needed."],
-  ["Conversation","FOLLOWUP_TIMEOUT","int","1–60","2","Conversation","Seconds to wait for follow-up after IRIS finishes speaking."],
-  ["Conversation","KIDS_FOLLOWUP_TIMEOUT","int","1–120","15","Conversation","Kids mode follow-up wait (longer for slower responses)."],
-  ["Conversation","FOLLOWUP_MAX_TURNS","int","1–20","3","Conversation","Max back-and-forth turns before returning to idle."],
-  ["Conversation","CONTEXT_TIMEOUT_SECS","int","30–3600","300","Conversation","Inactivity seconds before conversation history is cleared."],
-  ["LLM Token Tiers","NUM_PREDICT_SHORT","int","10–2000","64","Conversation","Token budget for greetings, yes/no, simple facts. Each token ≈ 0.23s speech."],
-  ["LLM Token Tiers","NUM_PREDICT_MEDIUM","int","10–2000","160","Conversation","Token budget for explanations and multi-step answers."],
-  ["LLM Token Tiers","NUM_PREDICT_LONG","int","10–2000","340","Conversation","Token budget for stories, how-to, lists, comparisons."],
-  ["LLM Token Tiers","NUM_PREDICT_MAX","int","10–2000","640","Conversation","Token budget for essays, code, and 'tell me everything'."],
-  ["LLM Token Tiers","TTS_MAX_CHARS","int","100–4000","2400","Conversation","Hard character cap before TTS truncation at sentence boundary (~5–8 sentences, ~100s)."],
-  ["Mouth Display","MOUTH_INTENSITY_AWAKE","int","0–15","8","Sleep","ILI9341 TFT brightness when IRIS is active and speaking (BL_MAP lookup, 0≈off, 15≈100%)."],
-  ["Mouth Display","MOUTH_INTENSITY_SLEEP","int","0–15","5","Sleep","TFT brightness during sleep starfield animation. Below 4 is essentially invisible."],
-  ["Mouth Display","MOUTH_INTENSITY_IDLE","int","0–15","8","Sleep","TFT brightness between interactions (resting state). Controls whether idle animations are visible."],
-  ["Sleep LEDs","LED_SLEEP_PEAK","int","0–255","8","Sleep","APA102 peak brightness during sleep breathe (indigo color)."],
-  ["Sleep LEDs","LED_SLEEP_FLOOR","int","0–255","1","Sleep","APA102 floor brightness during sleep breathe."],
-  ["Sleep LEDs","LED_SLEEP_BRIGHT","int","0–255","0xE3","Sleep","APA102 global brightness register during sleep (3/31 scale ≈ dim). Added S107."],
-  ["Sleep LEDs","LED_SLEEP_PERIOD","float","0.5–30.0","8.0","Sleep","Sleep LED breathe cycle period in seconds."],
-  ["Idle / Listen LEDs","LED_IDLE_PEAK","int","0–255","65","Lights","APA102 peak brightness when listening/idle (cyan)."],
-  ["Idle / Listen LEDs","LED_IDLE_FLOOR","int","0–255","3","Lights","APA102 floor brightness when idle."],
-  ["Idle / Listen LEDs","LED_IDLE_PERIOD","float","0.5–30.0","5.0","Lights","Idle LED breathe cycle period in seconds."],
-  ["Kids LEDs","LED_KIDS_PEAK","int","0–255","62","Lights","APA102 peak brightness in kids mode (yellow)."],
-  ["Kids LEDs","LED_KIDS_PERIOD","float","0.5–30.0","4.0","Lights","Kids mode LED breathe cycle period in seconds."],
-  ["System","SPEAKER_VOLUME","int","60–127","121","System","wm8960 ALSA speaker level applied at startup (~95%). Gesture VOL+/- moves within 60–VOL_MAX."],
-  ["System","VOL_MAX","int","60–127","127","System","Hard ceiling for voice volume commands ('louder'/'quieter')."],
-  ["OGLE Vision Bridge","OGLE_Y_BIAS","float","-1.0–1.0","-0.5","Vision Cal","Vertical gaze offset correction. Negative = eyes track high. Tune after mounting."],
-  ["OGLE Vision Bridge","OGLE_CONF_GATE","float","0.0–1.0","0.5","Vision Cal","Minimum detection confidence to accept a gaze update."],
-  ["OGLE Vision Bridge","OGLE_FACING_REQUIRED","bool","0/1","0","Vision Cal","Require face to be forward-facing before accepting gaze."],
-  ["OGLE Vision Bridge","OGLE_LOST_TIMEOUT_S","float","0.5–30.0","2.5","Vision Cal","Seconds after last detection before GAZE:LOST is emitted."],
-  ["OGLE Vision Bridge","OGLE_SMOOTH_ALPHA","float","0.0–1.0","0.3","Vision Cal","EMA smoothing factor for gaze (0=max smooth, 1=raw)."],
-  ["OGLE Vision Bridge","OGLE_FLIP_X","bool","0/1","0","Vision Cal","Mirror gaze X axis if camera is physically inverted."],
-  ["OGLE Vision Bridge","OGLE_FLIP_Y","bool","0/1","0","Vision Cal","Mirror gaze Y axis."],
-  ["Gandalf AI","OLLAMA_MODEL_ADULT","string","—","iris","Gandalf AI","Ollama model name for adult mode (maps to mistral-small3.2:24b via modelfile)."],
-  ["Gandalf AI","OLLAMA_MODEL_KIDS","string","—","iris-kids","Gandalf AI","Ollama model name for kids mode."],
-];
+/* ── Config map ────────────────────────────── */
+/* CFG_MAP now lives in iris_defs.js, shared with the WebUI's field
+   popovers. Add a config key THERE, not here. */
 
 /* ── Troubleshoot cases ───────────────────────────────── */
 /* [symptom, cause, config_key, fix] */
 const TROUBLE = [
-  ["TTS reply is truncated or cut off mid-sentence","Token budget tier too low — LLM stopped before finishing","NUM_PREDICT_MEDIUM / NUM_PREDICT_LONG (Conversation tab)","Raise the matching tier. Check Logs tab to see which tier was selected (look for [BENCH] tier=). Also verify TTS_MAX_CHARS isn't the culprit."],
-  ["Reply stops after 5–8 sentences even though tier is high","TTS_MAX_CHARS character cap reached","TTS_MAX_CHARS (Conversation tab)","Raise TTS_MAX_CHARS. Default 2400 ≈ ~100s speech. The streaming pipeline stops dispatching at the first sentence boundary past this limit."],
-  ["IRIS doesn't respond to wakeword","OWW_THRESHOLD too high, mic level too low, or voice (e.g. a child's) falls outside the model's adult-only training set","OWW_THRESHOLD (Wake Word tab), SILENCE_RMS","Lower OWW_THRESHOLD slightly (0.70 → 0.60). Check mic is working in Logs tab. Verify alsa-init.sh ran at boot. If a specific speaker never triggers even at a lower threshold, the model itself needs a retrain with that voice as a positive sample — see the Wake Word Training Story card in About."],
-  ["IRIS triggers on TV / background noise","OWW_THRESHOLD too low","OWW_THRESHOLD","Raise OWW_THRESHOLD (0.70 → 0.80+). Check OWW_DRAIN_SECS is at least 0.10."],
-  ["First reply after a long pause takes 10–20 seconds","Ollama unloaded the model from VRAM (5-min default TTL)","keep_alive (in services/llm.py — not WebUI)","keep_alive is set to 8h in S134. If this recurs, check GandalfAI: ollama ps should show model expiry at +8h. If Ollama was restarted, 8h resets."],
+  ["TTS reply is truncated or cut off mid-sentence","Token budget tier too low, OR a voice barge-in stop fired (S199: kids talking along could cut playback; kids grammar now tighter. S201: a PARTIAL Vosk grammar match must now repeat across two reads before firing, so IRIS's own speaker bleed no longer false-cuts her; a real spoken 'stop'/'be quiet' still stops her instantly)","NUM_PREDICT_MEDIUM / NUM_PREDICT_LONG (Conversation tab); Voice Barge-in card (Gestures tab)","Check Logs for [INT] Stop phrase matched: '...'. That means barge-in cut it, not the LLM. Otherwise raise the matching tier (look for [BENCH] tier=). Also verify TTS_MAX_CHARS isn't the culprit."],
+  ["Reply stops after 5–8 sentences even though tier is high","TTS_MAX_CHARS character cap reached","TTS_MAX_CHARS (Conversation tab)","Raise TTS_MAX_CHARS. Default 4000 (S217) ≈ ~4.4 min speech. The streaming pipeline stops dispatching at the first sentence boundary past this limit. A story that hits it ends with a 'say keep going' bridge and resumes on request."],
+  ["IRIS doesn't respond to wakeword","OWW_THRESHOLD too high, mic level too low, or voice (e.g. a child's) falls outside the model's adult-only training set","OWW_THRESHOLD (Wake Word tab), SILENCE_RMS","Lower OWW_THRESHOLD slightly (0.75 → 0.65). Check mic is working in Logs tab. Verify alsa-init.sh ran at boot. If a specific speaker never triggers even at a lower threshold, the model itself needs a retrain with that voice as a positive sample. See the Wake Word Training Story card in About."],
+  ["IRIS triggers on TV / background noise","OWW_THRESHOLD too low","OWW_THRESHOLD","Raise OWW_THRESHOLD (0.75 → 0.80+). Check OWW_DRAIN_SECS is at least 0.10."],
+  ["First reply after a long pause takes 10–20 seconds","Ollama unloaded the model from VRAM (5-min default TTL)","keep_alive (in services/llm.py, not WebUI)","keep_alive is set to 8h in S134. If this recurs, check GandalfAI: ollama ps should show model expiry at +8h. If Ollama was restarted, 8h resets."],
   ["Voice too quiet / too loud","SPEAKER_VOLUME set wrong","SPEAKER_VOLUME, VOL_MAX (System tab)","Adjust SPEAKER_VOLUME. VOL_MAX caps the ceiling reachable by VOL+ gesture."],
   ["Eyes tracking too high or too low","Person Sensor Y_BIAS not calibrated for mount height","PS_CFG:Y_BIAS (Vision Cal → Person Sensor Config)","Adjust Y_BIAS slider. Positive values move eyes down, negative up. Default -0.5. Firmware must be S141+ for PS_CFG to work."],
-  ["Eyes fixed forward / not tracking at all","Person Sensor missed I2C ACK at boot, or connector issue","n/a — firmware self-heals","The self-healing re-probe retries every 1s. Wait ~5s after power-on. Check Logs tab for FACE: lines. If still dead, check the I2C connector for hotglue/debris (RD-033 root cause)."],
-  ["IRIS silent after 9 PM and won't respond to wakeword","Normal — nightly sleep window active (21:00–08:00)","SLEEP_WINDOW_START_HOUR / END_HOUR (core/config.py — code edit to change)","Expected behavior. Wakeword during sleep plays a quip then re-sleeps. To change window, edit core/config.py and redeploy."],
+  ["Eyes fixed forward / not tracking at all","Gaze sensor not found at boot, or a connector issue","n/a: firmware re-probes","The firmware re-probes every 30s. Wait a few seconds after power-on, then check the Logs tab for FACE: lines and for a [CG] SEN0626 found line. If still dead, reseat the sensor's UART connector and check it for hotglue or debris (RD-033 root cause on the old part)."],
+  ["IRIS silent after 9 PM and won't respond to wakeword","Normal: nightly sleep window active (21:00–07:00, S197)","SLEEP_WINDOW_START_HOUR / END_HOUR (core/config.py, code edit to change)","Expected behavior. As of S203 a single 'hey Iris' in-window fully wakes her (quip, then wakes GandalfAI, then a real answer), and she returns to sleep after the exchange. To change the window, edit SLEEP_WINDOW_START_HOUR / END_HOUR in core/config.py and redeploy."],
   ["Mouth display nearly black / idle animations invisible","MOUTH_INTENSITY_IDLE too low","MOUTH_INTENSITY_IDLE (Sleep tab)","Raise to 8+ (default). Resting intensity governs what you see between conversations. Below 4 is essentially off on ILI9341."],
-  ["iris_config.json is 0 bytes, IRIS on defaults","Config write failure — rare, hardened S141","iris_config.json (protected — do not edit directly)","Recover from iris_config.json.goldbak on SD. Check Logs tab for last [CFG] line to see known-good values. Then Persist to SD. S141 added write guards to prevent re-occurrence."],
-  ["Follow-up conversation drops immediately after IRIS speaks","FOLLOWUP_TIMEOUT too short","FOLLOWUP_TIMEOUT (Conversation tab)","Raise to 4–6s. Default 2s. The timer starts when IRIS finishes speaking — if you take a moment to respond, it may expire."],
+  ["iris_config.json is 0 bytes, IRIS on defaults","Config write failure (rare, hardened S141)","iris_config.json (protected: do not edit directly)","Recover from iris_config.json.goldbak on SD. Check Logs tab for last [CFG] line to see known-good values. Then Persist to SD. S141 added write guards to prevent re-occurrence."],
+  ["Follow-up conversation drops immediately after IRIS speaks","FOLLOWUP_TIMEOUT too short","FOLLOWUP_TIMEOUT (Conversation tab)","Raise to 4–6s. Default 2s. The timer starts when IRIS finishes speaking. If you take a moment to respond, it may expire."],
   ["LED breathe too fast or too slow","LED period misconfigured","LED_IDLE_PERIOD / LED_SLEEP_PERIOD (Lights / Sleep tab)","Default idle 5.0s, sleep 8.0s. Shorter = more urgent, longer = more ambient."],
-  ["Can't get IRIS out of kids mode by voice","Pre-S144 the router only matched 'switch to adult mode'","n/a — fixed in S144","Say any of: 'switch to adult mode', 'adult mode', 'normal mode', 'exit/stop/leave kids mode', 'be normal', 'big kid mode'. All now switch back. The WebUI Kids Mode toggle also always works."],
+  ["Can't get IRIS out of kids mode by voice","Pre-S144 the router only matched 'switch to adult mode'","n/a: fixed in S144","Say any of: 'switch to adult mode', 'adult mode', 'normal mode', 'exit/stop/leave kids mode', 'be normal', 'big kid mode'. All now switch back. The WebUI Kids Mode toggle also always works."],
   ["Kids mode feels slow / dead silence while IRIS thinks","Gap-fillers disabled, or threshold too high","KIDS_GAP_FILLERS / KIDS_THINK_FILLER_MS (Conversation tab)","Ensure KIDS_GAP_FILLERS=1. Lower KIDS_THINK_FILLER_MS (e.g. 1200→800) to fill shorter gaps with a playful 'thinking' clip. Kids mode only."],
-  ["Hand gesture works but there's no sound or mouth reaction","Gesture cues turned off","GESTURE_AUDIO_CUE / GESTURE_MOUTH_CUE (System tab)","Set both to 1. Note the spoken/mouth cue is intentionally skipped while IRIS is mid-sentence — the LED flash still fires. Check Logs tab for [GCUE] lines."],
-  ["Camera game won't start ('let's play I spy')","Camera disabled, or trigger phrase not matched","CAMERA_ENABLED","Camera games run in BOTH kids and adult mode (only the tone changes) — they need CAMERA_ENABLED=1. Say a trigger exactly: 'let's play I spy' / 'guess what I'm holding' / 'guess my face'. Confirm the camera works via 'describe what you see'."],
+  ["Hand gesture works but there's no sound or mouth reaction","Gesture cues turned off","GESTURE_AUDIO_CUE / GESTURE_MOUTH_CUE (System tab)","Set both to 1. Note the spoken/mouth cue is intentionally skipped while IRIS is mid-sentence; the LED flash still fires. Check Logs tab for [GCUE] lines."],
+  ["Camera game won't start ('let's play I spy')","Camera disabled, or trigger phrase not matched","CAMERA_ENABLED","Camera games run in BOTH kids and adult mode (only the tone changes). They need CAMERA_ENABLED=1. Say a trigger exactly: 'let's play I spy' / 'guess what I'm holding' / 'guess my face' / 'rock paper scissors' / 'guess my drawing'. Confirm the camera works via 'describe what you see'."],
+  ["Rock Paper Scissors keeps saying it can't see your hand","Hand held too close, off-center, or poorly lit","CAMERA_AUTOFOCUS / CAMERA_AF_RANGE (core/config.py)","Hold your hand about an arm's length away, right in the middle of her view, and keep it still right after 'SHOOT!'. Holding it CLOSE is the classic failure (S216): a close hand comes back blurred and clipped, which reads as protruding fingers and scores as scissors. This matches her spoken coaching. IRIS gets one automatic retry with coaching before she skips the round gracefully (no score given for a skipped round)."],
   ["Vision / camera 'describe what you see' returns error","num_ctx too small for image tokens (~4570), or model not loaded","num_ctx in modelfile (GandalfAI), VISION_MODEL (core/config.py)","Vision needs num_ctx ≥6144. Current model is mistral-small3.2:24b with Pixtral vision baked in. If returning HTTP 400, num_ctx is the likely cause. Check Ollama logs on GandalfAI."],
-  ["Persist to SD button fails or times out","SD remount failure or overlayfs issue","n/a — system","SSH to Pi4: sudo mount -o remount,rw /media/root-ro. Check df -h for overlay fullness. Check journalctl -u iris-web for error detail."],
+  ["Persist to SD button fails or times out","SD remount failure or overlayfs issue","n/a: system","SSH to Pi4: sudo mount -o remount,rw /media/root-ro. Check df -h for overlay fullness. Check journalctl -u iris-web for error detail."],
 ];
 
 /* ── MAD Loop steps ───────────────────────────────────── */
 const MAD_STEPS = [
   {num:"1",lbl:"Claude Chat Planning",desc:"Problem scoped, solution designed, risks identified. No code written."},
-  {num:"2",lbl:"ChatGPT Critique",desc:"Independent review — finds false assumptions, missed edge cases."},
+  {num:"2",lbl:"ChatGPT Critique",desc:"Independent review: finds false assumptions, missed edge cases."},
   {num:"3",lbl:"Codex Audit",desc:"Optional repo-wide search for cross-file impact or stale references."},
   {num:"4",lbl:"Scope Lock",desc:"Consolidated implementation scope with explicit rollback plan."},
   {num:"5",lbl:"Claude Code Execution",desc:"File edits, deployments, and live verification via SSH + MCP tools."},
@@ -350,14 +311,14 @@ const MAD_STEPS = [
 
 /* ── Innovations ──────────────────────────────────────── */
 const INNOVATIONS = [
-  {title:"overlayfs Persistence + Rollback Model",body:"Pi4 runs with an overlay filesystem — writes go to RAM by default. IRIS codified a strict write→copy→md5-verify protocol for every deployed file. Gives instant rollback (reboot without persisting), atomic SD writes with cryptographic verification, and a clear audit trail. The failure mode that motivated this: an 8-hour display outage (S63) when a udev rules file was written to RAM only and silently vanished on reboot."},
-  {title:"udev Serial Identity (Hardware-Bound Device Naming)",body:"Binding /dev/ttyIRIS_EYES and /dev/ttyIRIS_SERVO to USB hardware serial numbers instead of port positions means the device is always at the same path regardless of which USB port is used. The failure mode: after a cable swap, ttyACM numbers shifted, serial commands routed to the wrong Teensy, and the failure was silent — no error, just wrong behavior. This is a pattern almost every Pi-based project gets wrong."},
-  {title:"Streaming LLM → Sentence-Boundary TTS Pipeline",body:"S116 implemented sentence-level streaming: as the LLM generates, each complete sentence is immediately sent to Kokoro TTS and the resulting PCM is queued for playback while the next sentence is still generating. First audio latency: ~1.5s (was ~23s on long replies). The TTS_MAX_CHARS hard cap at sentence boundaries prevents multi-minute replies without mid-word cutoffs. STOP interrupt halts within one sentence boundary — zero wasted synthesis time."},
-  {title:"MAD Loop — Multi-Agent Adversarial Development",body:"A solo developer workflow where significant changes are reviewed by at least two independent AI systems before implementation. Each AI sees the problem cold and critiques the other's assumptions. The human holds final authority. After 141 documented sessions this has caught false hardware-state assumptions, serial protocol ownership errors, scope creep in architecture changes, and firmware regressions before they hit live hardware."},
-  {title:"168-Session Formal Handoff Protocol",body:"Every session closes with a structured Session Close Report: CHANGELOG entry (mandatory), SNAPSHOT_LATEST.md update, HANDOFF_CURRENT.md next-work pointer, and a Repo/GitHub/Pi4/Teensy/GandalfAI status block. The documentation is the continuity layer — any future AI agent (or human) can resume from SNAPSHOT_LATEST.md with no prior context. The 8-digit md5 hash per deployed file makes state verification unambiguous."},
-  {title:"Runtime-Tunable Sensor Config Without Firmware Rebuilds",body:"PS_CFG protocol (S141) lets Pi4 push Person Sensor tuning parameters (confidence gate, facing requirement, lost timeout, Y-bias) to Teensy firmware over serial at runtime. Previously, changing any of these required editing C++ constants, rebuilding with PlatformIO, and reflashing — a 5–10 minute cycle requiring physical access. Now it's a WebUI slider change that takes effect in milliseconds."},
-  {title:"RPQR — Rapid Pre-cached Quip Response",body:"At startup, IRIS pre-synthesizes a bank of short audio clips via Kokoro and holds them as PCM in memory. On wakeword, a clip plays instantly — before GandalfAI has received the request. Eliminates perceived wake latency. Also enables coherent wakeword responses during sleep mode without requiring Ollama to be warm. The cache includes time-of-day variants: morning quips, afternoon quips, late-night quips."},
-  {title:"Wake Word Training Story — 'Hey IRIS' Is Not a Config Toggle",body:"It's easy to assume a custom wake word is a one-line setting. It's actually a from-scratch ML training run: 50,000 synthetic voice clips generated by Piper TTS, 2,000 hours of pre-computed negative audio so the model learns what NOT to fire on, room-reverb and noise augmentation, then 100,000 training steps on an RTX 3090 (atlas-voice-training, a Docker-based fork of the open-source openWakeWord project). One run takes 6–8 hours end to end. At the 3090's ~350W under load, that's roughly 2.5 kWh — about 25 full MacBook Pro charges, ~2.5 days of your refrigerator running, or a 60W bulb left on for 40+ hours. And the first result still isn't the end: the live 'hey iris' model was trained purely on adult synthetic voices, so it works well for one voice but under-recognizes kids — even after several training attempts, one earlier 'best ever' model was accidentally lost, and a later attempt to broaden it made false-triggers 4x worse. The threshold (how confident it must be before it 'hears' you) got raised from 0.50 to 0.70 to stop it firing on the TV or background chatter — a trade-off that makes it even harder for less-represented voices to trigger it. A seemingly simple feature — 'it should recognize when someone says my name' — is genuinely one of the most labor- and compute-intensive things in the whole build."},
+  {title:"overlayfs Persistence + Rollback Model",body:"Pi4 runs with an overlay filesystem. Writes go to RAM by default. IRIS codified a strict write→copy→md5-verify protocol for every deployed file. Gives instant rollback (reboot without persisting), atomic SD writes with cryptographic verification, and a clear audit trail. The failure mode that motivated this: an 8-hour display outage (S63) when a udev rules file was written to RAM only and silently vanished on reboot."},
+  {title:"udev Serial Identity (Hardware-Bound Device Naming)",body:"Binding /dev/ttyIRIS_EYES and /dev/ttyIRIS_SERVO to USB hardware serial numbers instead of port positions means the device is always at the same path regardless of which USB port is used. The failure mode: after a cable swap, ttyACM numbers shifted, serial commands routed to the wrong Teensy, and the failure was silent: no error, just wrong behavior. This is a pattern almost every Pi-based project gets wrong."},
+  {title:"Streaming LLM → Sentence-Boundary TTS Pipeline",body:"S116 implemented sentence-level streaming: as the LLM generates, each complete sentence is immediately sent to Kokoro TTS and the resulting PCM is queued for playback while the next sentence is still generating. First audio latency: ~1.5s (was ~23s on long replies). The TTS_MAX_CHARS hard cap at sentence boundaries prevents multi-minute replies without mid-word cutoffs. STOP interrupt halts within one sentence boundary: zero wasted synthesis time."},
+  {title:"MAD Loop: Multi-Agent Adversarial Development",body:"A solo developer workflow where significant changes are reviewed by at least two independent AI systems before implementation. Each AI sees the problem cold and critiques the other's assumptions. The human holds final authority. After 141 documented sessions this has caught false hardware-state assumptions, serial protocol ownership errors, scope creep in architecture changes, and firmware regressions before they hit live hardware."},
+  {title:"195-Session Formal Handoff Protocol",body:"Every session closes with a structured Session Close Report: CHANGELOG entry (mandatory), SNAPSHOT_LATEST.md update, HANDOFF_CURRENT.md next-work pointer, and a Repo/GitHub/Pi4/Teensy/GandalfAI status block. The documentation is the continuity layer: any future AI agent (or human) can resume from SNAPSHOT_LATEST.md with no prior context. The 8-digit md5 hash per deployed file makes state verification unambiguous."},
+  {title:"Runtime-Tunable Sensor Config Without Firmware Rebuilds",body:"PS_CFG protocol (S141) lets Pi4 push Person Sensor tuning parameters (confidence gate, facing requirement, lost timeout, Y-bias) to Teensy firmware over serial at runtime. Previously, changing any of these required editing C++ constants, rebuilding with PlatformIO, and reflashing, a 5–10 minute cycle requiring physical access. Now it's a WebUI slider change that takes effect in milliseconds."},
+  {title:"RPQR: Rapid Pre-cached Quip Response",body:"At startup, IRIS pre-synthesizes a bank of short audio clips via Kokoro and holds them as PCM in memory. On wakeword, a clip plays instantly, before GandalfAI has received the request. Eliminates perceived wake latency. Also enables coherent wakeword responses during sleep mode without requiring Ollama to be warm. The cache includes time-of-day variants: morning quips, afternoon quips, late-night quips."},
+  {title:"Wake Word Training Story: 'Hey IRIS' Is Not a Config Toggle",body:"It's easy to assume a custom wake word is a one-line setting. It's actually a from-scratch ML training run: 50,000 synthetic voice clips generated by Piper TTS, 2,000 hours of pre-computed negative audio so the model learns what NOT to fire on, room-reverb and noise augmentation, then 100,000 training steps on an RTX 3090 (atlas-voice-training, a Docker-based fork of the open-source openWakeWord project). One run takes 6–8 hours end to end. At the 3090's ~350W under load, that's roughly 2.5 kWh: about 25 full MacBook Pro charges, ~2.5 days of your refrigerator running, or a 60W bulb left on for 40+ hours. And the first result still isn't the end: the live 'hey iris' model was trained purely on adult synthetic voices, so it works well for one voice but under-recognizes kids. Even after several training attempts, one earlier 'best ever' model was accidentally lost, and a later attempt to broaden it made false-triggers 4x worse. The threshold (how confident it must be before it 'hears' you) got raised in steps from 0.50 to the current 0.75 to stop it firing on the TV or background chatter, a trade-off that makes it even harder for less-represented voices to trigger it. A seemingly simple feature ('it should recognize when someone says my name') is genuinely one of the most labor- and compute-intensive things in the whole build."},
 ];
 
 /* =========================================================
@@ -371,26 +332,26 @@ function T(term, label) {
 function renderOverview() {
   document.getElementById('div-overview').innerHTML = `
 <div class="card" style="border-color:var(--accent2);border-width:2px">
-<p><strong style="color:var(--yellow)">IRIS is a personality-first AI robot.</strong> The core design goal is genuine character, emotional congruence, and a face that means what it says — voice, eyes, mouth, and LED lighting all changing simultaneously in real time based on conversational content. All technical architecture serves this goal.</p>
-<p>IRIS borrows from interpersonal neurobiology — the science of how people attune to each other through ${T('affective attunement','affective attunement')}, ${T('paraverbal','paraverbal signal')}, timing, and congruent affect — and treats it as an engineering spec rather than a metaphor. The aim is the uncanny-in-a-good-way feeling of being talked <em>to</em>, not at: a robot with enough character to trade quips with an adult and play I Spy or "guess my face" with a kid. The ${T('inclusive personality','personality system')} is defined by what IRIS <em>is</em>, not by what it must avoid — which keeps the model's anthropomorphic expression wide open.</p>
+<p><strong style="color:var(--yellow)">IRIS is a personality-first AI robot.</strong> The core design goal is genuine character, emotional congruence, and a face that means what it says: voice, eyes, mouth, and LED lighting all changing simultaneously in real time based on conversational content. All technical architecture serves this goal.</p>
+<p>IRIS borrows from interpersonal neurobiology (the science of how people attune to each other through ${T('affective attunement','affective attunement')}, ${T('paraverbal','paraverbal signal')}, timing, and congruent affect) and treats it as an engineering spec rather than a metaphor. The aim is the uncanny-in-a-good-way feeling of being talked <em>to</em>, not at: a robot with enough character to trade quips with an adult and play I Spy or "guess my face" with a kid. The ${T('inclusive personality','personality system')} is defined by what IRIS <em>is</em>, not by what it must avoid, which keeps the model's anthropomorphic expression wide open.</p>
 </div>
 <div class="card">
 <p>Under the hood: a three-node distributed system on a ${T('overlayfs','Raspberry Pi 4')}, a dedicated Windows inference workstation (${T('Ollama','GandalfAI')}) with an RTX 3090, and Teensy microcontroller boards driving animated ${T('ILI9341','TFT displays')}. The ${T('streaming pipeline')} delivers first audio in ~1.5 seconds. Every conversation turn generates an ${T('EMOTION tag')} that drives the eyes, mouth, and LEDs in one simultaneous signal.</p>
-<p>Development uses the ${T('MAD Loop')} workflow. After 168 documented sessions, all AI runs locally on owned hardware with zero external cloud dependencies.</p>
+<p>Development uses the ${T('MAD Loop')} workflow. After 195 documented sessions, all AI runs locally on owned hardware with zero external cloud dependencies.</p>
 </div>
 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:4px">
-<div class="card" style="text-align:center"><div style="font-size:2em;color:var(--accent);font-weight:700">168</div><div style="color:var(--muted);font-size:.82em">Development Sessions</div></div>
+<div class="card" style="text-align:center"><div style="font-size:2em;color:var(--accent);font-weight:700">195</div><div style="color:var(--muted);font-size:.82em">Development Sessions</div></div>
 <div class="card" style="text-align:center"><div style="font-size:2em;color:var(--green);font-weight:700">~1.5s</div><div style="color:var(--muted);font-size:.82em">First Audio Latency</div></div>
 <div class="card" style="text-align:center"><div style="font-size:2em;color:var(--yellow);font-weight:700">46</div><div style="color:var(--muted);font-size:.82em">tok/s LLM (GPU)</div></div>
 </div>
 <div class="card" style="border-color:var(--accent2);margin-top:10px">
 <h3 style="margin-top:0;color:var(--accent2)">Signature Integrations</h3>
 <ul style="margin:0;padding-left:18px">
-<li><strong>Lifelike gaze-tracking eyes</strong> — the namesake feature: a high-detail TeensyEyes render (Adafruit Uncanny Eyes lineage) on twin 240×240 displays, with a Useful Sensors Person Sensor literally driving the gaze so IRIS's eyes follow you around the room; pupils dilate and the eye style shifts with emotion. A second Person Sensor pans the whole head to track you, deliberately glacially slow.</li>
-<li><strong>Pi-camera kids games</strong> — reciprocal I Spy / Show Me / Make a Face: IRIS sees, reacts in character, and keeps the back-and-forth going for several turns without re-waking (S168).</li>
-<li><strong>RPQR instant-quip wake</strong> — a pre-synthesized quip fires the moment you say the wake word, before GandalfAI has even received the request, so there is zero perceived wake lag.</li>
-<li><strong>Streaming-first speech</strong> — IRIS starts talking on the first sentence while the rest still generates: ~1.5s to first audio instead of waiting ~23s for a full reply.</li>
-<li><strong>Tripartite affect loop</strong> — every reply's emotion tag drives eyes, mouth, and LEDs in one simultaneous signal.</li>
+<li><strong>Lifelike gaze-tracking eyes:</strong> the namesake feature: a high-detail TeensyEyes render (Adafruit Uncanny Eyes lineage) on twin 240×240 displays, with a face sensor literally driving the gaze so IRIS's eyes follow you around the room; pupils dilate and the eye style shifts with emotion. A second Person Sensor pans the whole head to track you, deliberately glacially slow.</li>
+<li><strong>Pi-camera kids games:</strong> reciprocal I Spy / Show Me / Make a Face / Rock Paper Scissors / Guess My Drawing: IRIS sees, reacts in character, and keeps the back-and-forth going for several turns without re-waking (S168, reworked S210).</li>
+<li><strong>RPQR instant-quip wake:</strong> a pre-synthesized quip fires the moment you say the wake word, before GandalfAI has even received the request, so there is zero perceived wake lag.</li>
+<li><strong>Streaming-first speech:</strong> IRIS starts talking on the first sentence while the rest still generates: ~1.5s to first audio instead of waiting ~23s for a full reply.</li>
+<li><strong>Tripartite affect loop:</strong> every reply's emotion tag drives eyes, mouth, and LEDs in one simultaneous signal.</li>
 </ul>
 </div>`;
 }
@@ -407,9 +368,9 @@ function renderArch() {
 <div class="node-grid">${nodeHtml}</div>
 <div class="card">
 <h3>Storage Model</h3>
-<p>${T('overlayfs')} — all Pi4 writes land in RAM by default. Config changes survive assistant restarts but are lost on reboot unless you click <strong>Persist to SD</strong>. The SD card is read-only except during explicit persist operations via /media/root-ro remount.</p>
+<p>${T('overlayfs')}: all Pi4 writes land in RAM by default. Config changes survive assistant restarts but are lost on reboot unless you click <strong>Persist to SD</strong>. The SD card is read-only except during explicit persist operations via /media/root-ro remount.</p>
 <h3>Serial Identity</h3>
-<p>Teensy boards are identified by ${T('udev symlink','udev symlinks')} bound to USB hardware serial numbers: <code>/dev/ttyIRIS_EYES</code> (Teensy 4.1, serial 13625440) and <code>/dev/ttyIRIS_SERVO</code> (Teensy 4.0, serial 12763490). These never shift when cables are swapped.</p>
+<p>Teensy boards are identified by ${T('udev symlink','udev symlinks')} bound to USB hardware serial numbers: <code>/dev/ttyIRIS_EYES</code> (Teensy 4.1, serial YOUR-T41-SERIAL) and <code>/dev/ttyIRIS_SERVO</code> (Teensy 4.0, serial YOUR-T40-SERIAL). These never shift when cables are swapped.</p>
 <h3>Serial Ownership</h3>
 <p>${T('TeensyBridge')} is the only code that opens <code>/dev/ttyIRIS_EYES</code>. All other code communicates via UDP → <code>127.0.0.1:10500</code>. The bridge forwards commands and auto-wakes IRIS if a display command arrives during sleep.</p>
 </div>`;
@@ -425,11 +386,11 @@ ${i < PIPE.length - 1 ? '<div class="pipe-arrow">→</div>' : ''}`).join('');
 <h3>${T('streaming pipeline','Streaming Pipeline')} (S116)</h3>
 <p>IRIS does not wait for the full LLM response before speaking. Each complete sentence is synthesized and played while later sentences are still generating. First audio latency dropped from ~23s to ~1.5s on long replies. A single <code>STOP</code> command halts dispatch within one ${T('sentence boundary')}, immediately abandoning the LLM stream.</p>
 <h3>${T('num_predict','Token Budget Tiers')}</h3>
-<p>IRIS classifies each query and picks a tier automatically: SHORT (greetings/yes-no) → MEDIUM (explanations) → LONG (stories/lists) → MAX (essays). Each token is ~0.25s of speech at the current 0.9x voice speed; generation runs ~46 tok/s. The ${T('TTS_MAX_CHARS')} cap is a second safety net — cuts off at the first sentence boundary past the character limit.</p>
+<p>IRIS classifies each query and picks a tier automatically: SHORT (greetings/yes-no) → MEDIUM (explanations) → LONG (stories/lists) → MAX (essays). Each token is ~0.2–0.25s of speech at the configured voice speed (code default 0.95x, live-tunable from the Voice tab); generation runs ~46 tok/s. The ${T('TTS_MAX_CHARS')} cap is a second safety net: cuts off at the first sentence boundary past the character limit.</p>
 <h3>${T('RPQR')} Fast Path</h3>
-<p>Wake quips bypass the LLM entirely — pre-synthesized at startup, played from RAM on wakeword trigger. Makes IRIS feel instant on wake. Also allows wakeword responses during sleep mode without requiring GandalfAI to be warm.</p>
+<p>Wake quips bypass the LLM entirely: pre-synthesized at startup, played from RAM on wakeword trigger. Makes IRIS feel instant on wake. Also allows wakeword responses during sleep mode without requiring GandalfAI to be warm.</p>
 <h3>${T('POST')} Self-Test</h3>
-<p>Every assistant startup runs a full self-test. Current authorized baseline: 20/23 PASS, 0 FAIL. Visible in the Logs tab. A FAIL on the LLM smoke test typically means GandalfAI is not responding — check <code>ollama ps</code>.</p>
+<p>Every assistant startup runs a full self-test. A healthy startup shows 0 FAIL; the PASS count itself moves as subsystems change. Visible in the Logs tab. A FAIL on the LLM smoke test typically means GandalfAI is not responding: check <code>ollama ps</code>.</p>
 </div>`;
 }
 
@@ -441,7 +402,10 @@ function renderSettings() {
       rows += `<tr class="cfg-group-row"><td colspan="6">${r[0]}</td></tr>`;
       lastGroup = r[0];
     }
-    rows += `<tr><td class="k">${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td class="def">${r[4]}</td><td>${r[5]}</td><td>${r[6]}</td></tr>`;
+    // r[7] is the optional Tier-1 "what this changes in her behavior" line,
+    // the same text the WebUI shows in that field's popover. Lead with it.
+    const desc = r[7] ? `<b>${r[7]}</b><br>${r[6]}` : r[6];
+    rows += `<tr><td class="k">${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td class="def">${r[4]}</td><td>${r[5]}</td><td>${desc}</td></tr>`;
   });
   document.getElementById('div-settings').innerHTML = `
 <table><thead><tr><th>Key</th><th>Type</th><th>Range</th><th>Default</th><th>WebUI Tab</th><th>Description</th></tr></thead>
@@ -472,9 +436,9 @@ function renderMadLoop() {
 <div class="mad-grid">${steps}</div>
 <div class="card">
 <p>Final authority always belongs to the human operator. AI agents can plan, implement, and verify at the code level, but hardware behavior, physical sensor state, and "does it sound right?" are human verification gates that cannot be delegated.</p>
-<p>The adversarial step (two AIs independently critiquing the same plan) has caught false hardware-state assumptions, serial protocol ownership errors, and scope creep in most significant architecture changes over 168 sessions.</p>
+<p>The adversarial step (two AIs independently critiquing the same plan) has caught false hardware-state assumptions, serial protocol ownership errors, and scope creep in most significant architecture changes over 195 sessions.</p>
 <h3>Session Close Protocol</h3>
-<p>Every session ends with: CHANGELOG.md updated (mandatory — no deferral), SNAPSHOT_LATEST.md current machine state, HANDOFF_CURRENT.md next-work pointer, and Repo/GitHub/Pi4/Teensy/GandalfAI status block. The 8-digit md5 per deployed file makes state verification unambiguous across sessions and across AI agents.</p>
+<p>Every session ends with: CHANGELOG.md updated (mandatory, no deferral), SNAPSHOT_LATEST.md current machine state, HANDOFF_CURRENT.md next-work pointer, and Repo/GitHub/Pi4/Teensy/GandalfAI status block. The 8-digit md5 per deployed file makes state verification unambiguous across sessions and across AI agents.</p>
 </div>`;
 }
 
@@ -507,21 +471,68 @@ function closePopup() {
 document.addEventListener('keydown', e => { if(e.key==='Escape') closePopup(); });
 
 /* ── Emotion states ──────────────────────────────────── */
+// S236 correction: this table listed an EXCITED tag that the system cannot
+// produce (VALID_EMOTIONS in core/config.py has nine tags and EXCITED is not
+// one of them), and named two eye definitions that do not exist in firmware
+// ("bigBlue", removed per src/main.cpp:68 "bigBlue removed", and "fire", whose
+// real name is "flame"). Corrected against src/config.h's eyeDefinitions index
+// map and core/config.py VALID_EMOTIONS.
+//
+// Only ANGRY and CONFUSED carry a firmware eye swap (flame and hypnoRed).
+// EMOTION_EYE_MAP is unset in the live iris_config.json, so every other tag
+// keeps whatever eye is currently selected rather than forcing one.
+// S241 update: every tag now also drives a timed EYELID script in firmware, so
+// the "eyes" column describes the lid acting as well as the texture. Two new
+// tags were added for her wit register, ANNOYED and EXASPERATED.
 const EMOTIONS = [
-  {tag:"NEUTRAL",  eyes:"nordicBlue — steady, present gaze",          mouth:"Calm resting animation",       leds:"Cyan breathe (standard)"},
-  {tag:"HAPPY",    eyes:"bigBlue — wide pupils, bright",              mouth:"Upward curve, grin animation", leds:"Cyan brighter"},
-  {tag:"AMUSED",   eyes:"hazel — relaxed, playful lid droop",         mouth:"Smirk, asymmetric curve",      leds:"Cyan standard"},
-  {tag:"ANGRY",    eyes:"fire — narrowed, intense warm sclera",       mouth:"Tight compressed jaw",         leds:"Shifts dim / warm"},
-  {tag:"EXCITED",  eyes:"bigBlue — rapid movement, very wide pupils", mouth:"Active jaw, rapid motion",     leds:"Cyan bright pulse"},
-  {tag:"SAD",      eyes:"nordicBlue — drooped lids, slow blink",      mouth:"Downward curve",               leds:"Indigo dim"},
+  {tag:"NEUTRAL",   eyes:"Keeps the current eye (nordicBlue when idle), lids track normally", mouth:"Calm resting animation",       leds:"Cyan breathe (standard)"},
+  {tag:"HAPPY",     eyes:"Keeps the current eye; lower lid raises (real-smile squint), one slow warm blink", mouth:"Upward curve, grin animation", leds:"Cyan brighter"},
+  {tag:"AMUSED",    eyes:"Keeps the current eye; lower lid pulses at laugh rhythm",  mouth:"Smirk, asymmetric curve",      leds:"Cyan standard"},
+  {tag:"CURIOUS",   eyes:"Keeps the current eye; slight widen and blinking suppressed (attention)", mouth:"Light, attentive motion",      leds:"Cyan standard"},
+  {tag:"SURPRISED", eyes:"Keeps the current eye; lids SNAP wide, hold, then settle", mouth:"Open, sharp onset",            leds:"Cyan standard"},
+  {tag:"CONFUSED",  eyes:"hypnoRed: firmware emotion swap; lids drift uncertainly",  mouth:"Uneven, hesitant motion",      leds:"Cyan standard"},
+  {tag:"ANGRY",     eyes:"flame: firmware emotion swap; upper lid drops and lower tightens (glare), rare sharp blink", mouth:"Tight compressed jaw",         leds:"Shifts dim / warm"},
+  {tag:"ANNOYED",   eyes:"Keeps the current eye; quick symmetric squeeze held a beat then released", mouth:"Smirk (shared with AMUSED)",   leds:"Warm amber"},
+  {tag:"EXASPERATED", eyes:"Keeps the current eye; a brisk eye-roll ending on a settle blink", mouth:"Deadpan flat line",            leds:"Muted violet"},
+  {tag:"SAD",       eyes:"Keeps the current eye; heavy lids with slow blinks",       mouth:"Downward curve",               leds:"Indigo dim"},
+  {tag:"SLEEPY",    eyes:"Keeps the current eye; deep droop, slow heavy blink closures", mouth:"Slow, low-amplitude motion",   leds:"Dim, long breathe"},
 ];
 
 /* ── Eye types ───────────────────────────────────────── */
+// S236 correction: "bigBlue" and "fire" were listed here and neither exists in
+// firmware. The list below is the real eyeDefinitions index map from
+// src/config.h. Indices 1 and 2 double as the ANGRY and CONFUSED emotion swaps;
+// the rest are selectable from the WebUI with the EYE:n serial command.
 const EYE_TYPES = [
-  {name:"nordicBlue", color:"#4fc3f7", desc:"Default conversational state — calm, direct, present. The resting face of a confident personality."},
-  {name:"hazel",      color:"#a1887f", desc:"Warm, empathic mode — used for reflective or supportive exchanges. Softer sclera tones, lower squint."},
-  {name:"bigBlue",    color:"#7986cb", desc:"Open, curious, engaged — wide pupils convey interest and enthusiasm. Used for HAPPY and EXCITED states."},
-  {name:"fire",       color:"#ef5350", desc:"Intense, assertive mode — ANGRY or high-EXCITED states. High-contrast warm sclera, tight narrowed pupils."},
+  {name:"nordicBlue",  color:"#4fc3f7", desc:"Index 0, the default idle eye. Calm, direct, present. The resting face of a confident personality."},
+  {name:"flame",       color:"#ef5350", desc:"Index 1. Intense and assertive. Doubles as the ANGRY emotion swap, and is selectable on its own."},
+  {name:"hypnoRed",    color:"#e57373", desc:"Index 2. Doubles as the CONFUSED emotion swap, and is selectable on its own."},
+  {name:"hazel",       color:"#a1887f", desc:"Index 3. Warm, empathic. Softer sclera tones, lower squint. Good for reflective or supportive exchanges."},
+  {name:"blueFlame1",  color:"#7986cb", desc:"Index 4. Cooler take on the flame pattern. WebUI selectable."},
+  {name:"dragon",      color:"#81c784", desc:"Index 5. The most stylized of the set. WebUI selectable."},
+  {name:"strikingBlue",color:"#5c9dff", desc:"Index 6. Bright, high-contrast blue. WebUI selectable, and the eye that replaced the old bigBlue."},
+  // S241: the vendored library, wired at indices 7-24. These shipped with the
+  // eye engine and sat unused until now. None of them is tied to an emotion in
+  // firmware -- which texture means which feeling is set on the Emotion Display
+  // card, so the operator's taste decides rather than the code.
+  {name:"cat",         color:"#ffb74d", desc:"Index 7. Vertical slit pupil. Reads alert and watchful."},
+  {name:"doomSpiral",  color:"#ba68c8", desc:"Index 8. Spiral iris, authored as an asymmetric left/right pair."},
+  {name:"anime",       color:"#f06292", desc:"Index 9. Large stylized highlights, asymmetric pair."},
+  {name:"doe",         color:"#8d6e63", desc:"Index 10. Soft and wide, the gentlest of the set. Asymmetric pair."},
+  {name:"demon",       color:"#e53935", desc:"Index 11. Harsh and hostile. Asymmetric pair."},
+  {name:"skull",       color:"#bdbdbd", desc:"Index 12. Bone-pale, stark."},
+  {name:"leopard",     color:"#ffa726", desc:"Index 13. Spotted animal iris. Asymmetric pair."},
+  {name:"toonstripe",  color:"#4dd0e1", desc:"Index 14. Flat cartoon striping, very readable at a distance."},
+  {name:"fizzgig",     color:"#ff8a65", desc:"Index 15. Small and busy, comic."},
+  {name:"newt",        color:"#9ccc65", desc:"Index 16. Amphibian iris, mottled."},
+  {name:"snake",       color:"#aed581", desc:"Index 17. Narrow slit, cold."},
+  {name:"fish",        color:"#4fc3f7", desc:"Index 18. Wet, glassy, wide."},
+  {name:"brown",       color:"#795548", desc:"Index 19. Naturalistic human brown."},
+  {name:"bigBlue",     color:"#42a5f5", desc:"Index 20. The original large blue eye, back as a selectable option."},
+  {name:"spikes",      color:"#7e57c2", desc:"Index 21. Radial spike pattern, synthetic."},
+  {name:"firebox",     color:"#ff7043", desc:"Index 22. Boxy ember texture."},
+  {name:"blueFlame2",  color:"#5c6bc0", desc:"Index 23. The second blue flame variant."},
+  {name:"doomRed",     color:"#c62828", desc:"Index 24. Deep red, heavy."},
 ];
 
 function renderPersonality() {
@@ -537,26 +548,26 @@ function renderPersonality() {
   document.getElementById('div-personality').innerHTML = `
 <div class="card" style="border-color:var(--accent2);border-width:2px">
 <h3 style="color:var(--accent2);margin-top:0">The Driving Purpose</h3>
-<p>IRIS is <em>first and foremost</em> a personality-first AI robot — built to express genuine personality, emotional congruence, and ${T('paraverbal','paraverbal richness')} in real-time conversation. The hardware pipeline, streaming architecture, and distributed compute exist entirely in service of that goal.</p>
-<p>The design language is techno-clinical: the same things that make a face read as <em>present</em> to the human nervous system — ${T('affective attunement','attunement')}, congruence between voice and expression, ${T('paraverbal','paraverbal')} timing and prosody — become hard requirements for the hardware and the streaming pipeline, not soft nice-to-haves. Get those right and a string of tokens starts to feel like someone in the room.</p>
-<p style="opacity:0.72;font-size:0.9em;margin-bottom:0"><strong>Provenance side note:</strong> IRIS's creator is professionally trained and licensed in the fields of psychology and addiction — which is where the emphasis on attunement, affect, and authentic responsiveness comes from. It informs the design; IRIS itself is a personality robot, not a clinical tool, and makes no therapeutic claims.</p>
+<p>IRIS is <em>first and foremost</em> a personality-first AI robot: built to express genuine personality, emotional congruence, and ${T('paraverbal','paraverbal richness')} in real-time conversation. The hardware pipeline, streaming architecture, and distributed compute exist entirely in service of that goal.</p>
+<p>The design language is techno-clinical: the same things that make a face read as <em>present</em> to the human nervous system (${T('affective attunement','attunement')}, congruence between voice and expression, ${T('paraverbal','paraverbal')} timing and prosody) become hard requirements for the hardware and the streaming pipeline, not soft nice-to-haves. Get those right and a string of tokens starts to feel like someone in the room.</p>
+<p style="opacity:0.72;font-size:0.9em;margin-bottom:0"><strong>Provenance side note:</strong> IRIS's creator is professionally trained and licensed in the fields of psychology and addiction, which is where the emphasis on attunement, affect, and authentic responsiveness comes from. It informs the design; IRIS itself is a personality robot, not a clinical tool, and makes no therapeutic claims.</p>
 <p style="margin-bottom:0"><strong>This is not a voice assistant that happens to have a face. It is a personality system that happens to use voice and AI.</strong></p>
 </div>
 
 <div class="card" style="border-color:var(--accent);border-width:2px">
-<h3 style="margin-top:0;color:var(--accent)">The Eyes — Lifelike Gaze Tracking <span style="color:var(--muted);font-weight:400;font-size:.8em">(the namesake)</span></h3>
-<p>The eyes are the headline of IRIS. They are a vividly animated render derived from Adafruit's <strong>Uncanny Eyes</strong>, by way of <strong>Chris Miller's TeensyEyes</strong> port, running on the Teensy 4.1 across twin 240×240 TFTs. Each eye style ships as massive generated lookup tables — per-pixel polar displacement and angle maps plus sclera/iris bitmaps (the <code>src/eyes/240x240/</code> assets run to roughly a million lines of data) — which is what gives the iris real depth, parallax, and a wet, living look instead of a flat cartoon.</p>
-<p><strong>The gaze is real.</strong> A Useful Sensors <strong>Person Sensor</strong> feeds your face position to the Teensy, and the eyes literally track <em>you</em> — they follow your face around the room. That is where the name comes from: <strong>IRIS</strong>. The pupil isn't static either: pupil dilation and the eye style (sclera color, iris pattern, eyelid squint) shift with the current ${T('EMOTION tag','emotion')}, so an excited IRIS has wide pupils and a calm one goes soft.</p>
-<p style="margin-bottom:0"><strong>And the head follows too.</strong> A second Person Sensor drives a <strong>pan servo</strong> that turns IRIS's whole head to keep you centered — deliberately as <em>slow as physically possible</em>. The motion is damped twice over: in code (anti-hunt filtering, ~6°/s top speed, a dead-zone and move-threshold so it never twitches — S155b) and mechanically (physical rotation dampers on the pan axis). The result is an unsettlingly subtle, almost imperceptible creep as it tracks you — independently rated "creepy" by the operator's wife. A <strong>physical toggle switch</strong> wired <strong>in-line on the servo's 5V power</strong> halts head tracking outright — flip it and IRIS holds still (the eyes keep tracking; only the pan servo is cut).</p>
+<h3 style="margin-top:0;color:var(--accent)">The Eyes: Lifelike Gaze Tracking <span style="color:var(--muted);font-weight:400;font-size:.8em">(the namesake)</span></h3>
+<p>The eyes are the headline of IRIS. They are a vividly animated render derived from Adafruit's <strong>Uncanny Eyes</strong>, by way of <strong>Chris Miller's TeensyEyes</strong> port, running on the Teensy 4.1 across twin 240×240 TFTs. Each eye style ships as massive generated lookup tables: per-pixel polar displacement and angle maps plus sclera/iris bitmaps (the <code>src/eyes/240x240/</code> assets run to roughly a million lines of data), which is what gives the iris real depth, parallax, and a wet, living look instead of a flat cartoon.</p>
+<p><strong>The gaze is real.</strong> A <strong>face sensor</strong> feeds your face position to the Teensy, and the eyes literally track <em>you</em>. They follow your face around the room. That is where the name comes from: <strong>IRIS</strong>. The pupil isn't static either: pupil dilation and the eye style (sclera color, iris pattern, eyelid squint) shift with the current ${T('EMOTION tag','emotion')}, so an excited IRIS has wide pupils and a calm one goes soft.</p>
+<p style="margin-bottom:0"><strong>And the head follows too.</strong> A second Person Sensor drives a <strong>pan servo</strong> that turns IRIS's whole head to keep you centered, deliberately as <em>slow as physically possible</em>. The motion is damped twice over: in code (anti-hunt filtering, ~6°/s top speed, a dead-zone and move-threshold so it never twitches; S155b) and mechanically (physical rotation dampers on the pan axis). The result is an unsettlingly subtle, almost imperceptible creep as it tracks you, independently rated "creepy" by the operator's wife. A <strong>physical toggle switch</strong> wired <strong>in-line on the servo's 5V power</strong> halts head tracking outright: flip it and IRIS holds still (the eyes keep tracking; only the pan servo is cut).</p>
 </div>
 
 <h3>Tripartite Affect Loop</h3>
-<p>Every LLM response begins with an ${T('EMOTION tag')} (e.g. <code>[EMOTION:AMUSED]</code>). Pi4 reads this on the first tokens and simultaneously fires three channels — all change at the same moment:</p>
+<p>Every LLM response begins with an ${T('EMOTION tag')} (e.g. <code>[EMOTION:AMUSED]</code>). Pi4 reads this on the first tokens and simultaneously fires three channels; all change at the same moment:</p>
 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:12px 0 16px">
 <div class="card" style="border-color:var(--accent);text-align:center;padding:14px">
   <div style="font-size:1.5em">👁</div>
   <div style="color:var(--accent);font-weight:700;margin:4px 0">Eyes</div>
-  <div style="font-size:.82em">${T('eye type','Display type')} (nordicBlue / hazel / bigBlue / fire), pupil size, eyelid squint — set via serial to Teensy 4.1.</div>
+  <div style="font-size:.82em">${T('eye type','Display type')} (nordicBlue / flame / hypnoRed / hazel / blueFlame1 / dragon / strikingBlue), pupil size, eyelid squint, set via serial to Teensy 4.1.</div>
 </div>
 <div class="card" style="border-color:var(--yellow);text-align:center;padding:14px">
   <div style="font-size:1.5em">👄</div>
@@ -581,30 +592,30 @@ function renderPersonality() {
 
 <div class="card">
 <h3 style="margin-top:0">${T('inclusive personality','Inclusive Personality Framing')}</h3>
-<p>The ${T('modelfile SYSTEM','modelfile SYSTEM prompt')} defines IRIS's character as a set of <strong>positive dispositions</strong> — what IRIS is — rather than a list of prohibitions. This distinction is deliberate, and its origin is techno-clinical — borrowed from how character is described in interpersonal neurobiology:</p>
+<p>The ${T('modelfile SYSTEM','modelfile SYSTEM prompt')} defines IRIS's character as a set of <strong>positive dispositions:</strong> what IRIS is, rather than a list of prohibitions. This distinction is deliberate, and its origin is techno-clinical, borrowed from how character is described in interpersonal neurobiology:</p>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0">
 <div class="callout callout-ok"><strong>Inclusive (used):</strong><br><em>"IRIS is direct, sharp, warm, genuinely curious, playfully combative, unafraid to have opinions, and never hedges to avoid conflict."</em></div>
 <div class="callout callout-warn"><strong>Exclusive (avoided):</strong><br><em>"Do not be sycophantic. Do not apologize. Do not break character. Do not add disclaimers."</em></div>
 </div>
-<p>Exclusive prohibition lists have two failure modes: (1) they signal the prohibited behavior to the model, which often surfaces it in edge cases; (2) they compress the LLM's expressive latitude — temperature, top_p, and sampling diversity can only generate within the space the prompt permits. Inclusive framing lets the model's own anthropomorphic generative potential operate freely inside a well-defined character.</p>
-<p style="margin-bottom:0">This mirrors how personality actually forms: as characteristic patterns of engagement, affective tone, and relational style — not as a list of suppressed behaviors. (A trait/dimensional view of personality, framed through interpersonal neurobiology rather than a prohibitions list.)</p>
+<p>Exclusive prohibition lists have two failure modes: (1) they signal the prohibited behavior to the model, which often surfaces it in edge cases; (2) they compress the LLM's expressive latitude: temperature, top_p, and sampling diversity can only generate within the space the prompt permits. Inclusive framing lets the model's own anthropomorphic generative potential operate freely inside a well-defined character.</p>
+<p style="margin-bottom:0">This mirrors how personality actually forms: as characteristic patterns of engagement, affective tone, and relational style, not as a list of suppressed behaviors. (A trait/dimensional view of personality, framed through interpersonal neurobiology rather than a prohibitions list.)</p>
 </div>
 
 <div class="card">
 <h3 style="margin-top:0">${T('iris-kids','Kids Mode')} Persona</h3>
 <p>The same inclusive framing applies to iris-kids. The modelfile does not say "do not discuss adult topics." It says: <em>"IRIS-kids is warm, enthusiastic, celebratory, curious, uses simple clear language, asks follow-up questions, and treats every child's observation as genuinely interesting."</em></p>
-<p>Inclusive parameters yield developmentally appropriate behavior naturally — the personality is <em>characterized</em>, not restricted. Kids mode also uses longer silence/recording windows and yellow LEDs to mark the mode shift visually.</p>
-<p style="margin-bottom:0"><strong>S144 engagement overhaul</strong> — tuned to hold a low-attention child: replies are capped to 1–2 fast sentences that always end on a hook (a question, dare, or mini-challenge); ${T('gap fillers','playful gap-filler')} lines fill the silence while IRIS thinks; the persona offers ${T('camera games','camera games')} (I Spy / Show Me / Make a Face) by name; and hand gestures get a spoken + ${T('gesture cue','mouth + LED')} confirmation. Exit by voice with "switch to adult mode", "normal mode", or "exit kids mode".</p>
+<p>Inclusive parameters yield developmentally appropriate behavior naturally: the personality is <em>characterized</em>, not restricted. Kids mode also uses longer silence/recording windows and yellow LEDs to mark the mode shift visually.</p>
+<p style="margin-bottom:0"><strong>S144 engagement overhaul:</strong> tuned to hold a low-attention child: replies are capped to 1–2 fast sentences that always end on a hook (a question, dare, or mini-challenge); ${T('gap fillers','playful gap-filler')} lines fill the silence while IRIS thinks; the persona offers ${T('camera games','camera games')} (I Spy / Show Me / Make a Face) by name; and hand gestures get a spoken + ${T('gesture cue','mouth + LED')} confirmation. Exit by voice with "switch to adult mode", "normal mode", or "exit kids mode".</p>
 </div>
 
 <div class="card">
 <h3 style="margin-top:0">LLM Sampling Parameters and Anthropomorphism</h3>
 <p>The modelfile sampling parameters are tuned specifically to maximize personality fidelity at voice-robot conversational lengths:</p>
 <ul>
-<li><code>temperature 0.75</code> — enough variance for authentic, non-robotic responses without incoherence at SHORT/MEDIUM tier lengths</li>
-<li><code>top_p 0.9</code> — maintains quality while preserving creative range for in-character expression</li>
-<li><code>repeat_penalty 1.1</code> — prevents the repetition patterns that make AI responses sound formulaic and synthetic</li>
-<li><code>stop tokens</code> — model-specific; Mistral requires [INST]/&lt;/s&gt;/User: to prevent turn-bleed at conversational boundaries</li>
+<li><code>temperature 0.75</code>: enough variance for authentic, non-robotic responses without incoherence at SHORT/MEDIUM tier lengths</li>
+<li><code>top_p 0.9</code>: maintains quality while preserving creative range for in-character expression</li>
+<li><code>repeat_penalty 1.1</code>: prevents the repetition patterns that make AI responses sound formulaic and synthetic</li>
+<li><code>stop tokens</code>: model-specific; Mistral requires [INST]/&lt;/s&gt;/User: to prevent turn-bleed at conversational boundaries</li>
 </ul>
 <p style="margin-bottom:0">These parameters work together with the ${T('inclusive personality','inclusive SYSTEM prompt')} to give the model maximum latitude to surface authentic character. Overly restrictive prompts combined with low temperature produce the hedged, disclaimer-heavy, robotically polite responses that are the explicit anti-goal of IRIS's design.</p>
 </div>`;
@@ -612,17 +623,19 @@ function renderPersonality() {
 
 /* ── Interaction: voice commands, gestures, LED meanings (S144) ── */
 const VOICE_CMDS = [
-  ["Wake","\"Hey Jarvis\" (wake word)","Wakes IRIS; an instant time-of-day quip plays while it spins up."],
-  ["Sleep","\"go to sleep\" / \"goodnight\"","Sleeps the eyes, mouth, and LEDs (also automatic 9 PM–8 AM)."],
+  ["Wake","\"Hey Iris\" (wake word)","Wakes IRIS; an instant time-of-day quip plays while it spins up."],
+  ["Sleep","\"go to sleep\" / \"goodnight\"","Sleeps the eyes, mouth, and LEDs (also automatic 9 PM–7 AM)."],
   ["Sleep","\"wake up\"","Wakes from sleep."],
   ["Interrupt","\"stop\" / \"cancel\" / \"quiet\"","Instantly stops whatever IRIS is saying."],
   ["Volume","\"louder\" / \"quieter\"","Steps the speaker volume up or down."],
   ["Volume","\"max volume\" / \"volume low\"","Jumps to the volume ceiling or floor."],
   ["Kids mode","\"switch to kids mode\"","Switches to the kid-friendly persona (yellow LEDs, slower listening)."],
-  ["Kids mode","\"switch to adult mode\" / \"normal mode\" / \"exit kids mode\"","Switches back to the adult persona. S144 — many phrasings now work by voice."],
-  ["Camera game (kids)","\"let's play I spy\"","IRIS spies an object via the camera and gives a color/shape clue; you guess."],
+  ["Kids mode","\"switch to adult mode\" / \"normal mode\" / \"exit kids mode\"","Switches back to the adult persona. S144. Many phrasings now work by voice."],
+  ["Camera game (kids)","\"let's play I spy\"","IRIS picks something she's confident about and clues you (color, then shape, then location); every guess is checked against her real pick."],
   ["Camera game (kids)","\"guess what I'm holding\"","Hold an object up to the camera and IRIS guesses what it is."],
   ["Camera game (kids)","\"guess my face\"","Make a face and IRIS reads the expression."],
+  ["Camera game","\"rock paper scissors\"","IRIS locks in her move before she looks, counts down to SHOOT, then reads your hand; best of 3 wins."],
+  ["Camera game (kids)","\"guess my drawing\" / \"guess what I drew\"","Hold a drawing up and IRIS guesses what you drew. Matched before 'guess what I'm holding' on purpose, so a child saying 'guess what I drew' lands in the right game."],
   ["Vision","\"what do you see?\" / \"describe what you see\"","IRIS captures a camera frame and describes the scene."],
 ];
 
@@ -637,19 +650,19 @@ const GESTURES = [
 ];
 
 const STATUS_LEDS = [
-  ["Cyan — slow breathe (~5s)","Idle / ready (adult mode)"],
-  ["Yellow — slow breathe (~4s)","Idle / ready (kids mode)"],
-  ["Solid red","Listening — recording your voice"],
-  ["Blue dot circling the ring","Thinking — speech-to-text / LLM / vision in progress"],
-  ["Solid green","Speaking — IRIS is talking"],
-  ["Magenta — fast shimmer","Waiting for your follow-up reply (no wake word needed)"],
+  ["Cyan: slow breathe (~5s)","Idle / ready (adult mode)"],
+  ["Yellow: slow breathe (~4s)","Idle / ready (kids mode)"],
+  ["Solid red","Listening: recording your voice"],
+  ["Blue dot circling the ring","Thinking: speech-to-text / LLM / vision in progress"],
+  ["Solid green","Speaking: IRIS is talking"],
+  ["Magenta: fast shimmer","Waiting for your follow-up reply (no wake word needed)"],
   ["Brief white","Wake word just heard"],
   ["Amber (steady)","Push-to-talk button pressed"],
-  ["Orange — breathe","Waking the AI workstation (GandalfAI) over the network"],
-  ["Red — rapid blink ×6","Error"],
+  ["Orange: breathe","Waking the AI workstation (GandalfAI) over the network"],
+  ["Red: rapid blink ×6","Error"],
   ["3× yellow blink","Kids mode just turned ON"],
   ["3× cyan blink","Kids mode just turned OFF"],
-  ["Very dim indigo — slow breathe (~8s)","Asleep"],
+  ["Very dim indigo: slow breathe (~8s)","Asleep"],
 ];
 
 function renderInteraction() {
@@ -662,24 +675,65 @@ function renderInteraction() {
 <table><thead><tr><th>Category</th><th>Say…</th><th>What happens</th></tr></thead><tbody>${vc}</tbody></table>
 
 <h3>Hand Gestures</h3>
-<p>A PAJ7620 gesture sensor on Teensy 4.0 reads hand motions. The defaults below are configurable in the WebUI <strong>Gestures</strong> tab. Every recognized gesture confirms three ways at once — a ${T('gesture cue','spoken word, a mouth pulse, and an LED flash')} (S144) — so it is obvious even without looking at the LED ring.</p>
+<p>A PAJ7620 gesture sensor on Teensy 4.0 reads hand motions. The defaults below are configurable in the WebUI <strong>Gestures</strong> tab. Every recognized gesture confirms three ways at once: a ${T('gesture cue','spoken word, a mouth pulse, and an LED flash')} (S144), so it is obvious even without looking at the LED ring.</p>
 <table><thead><tr><th>Gesture</th><th>Action</th><th>Confirmation</th></tr></thead><tbody>${gz}</tbody></table>
 
 <h3>LED Status Colors</h3>
 <p>The three ${T('APA102')} LEDs show IRIS's current state at a glance:</p>
 <table><thead><tr><th>LED color &amp; pattern</th><th>Meaning</th></tr></thead><tbody>${sl}</tbody></table>
-<div class="callout callout-info">During a spoken reply the LEDs breathe in the color of the current ${T('EMOTION tag','emotion')} — see <strong>Personality &amp; Affect</strong> for the full emotion→color table. Brightness and breathe speed are tunable via the <code>LED_*</code> settings.</div>
+<div class="callout callout-info">During a spoken reply the LEDs breathe in the color of the current ${T('EMOTION tag','emotion')}. See <strong>Personality &amp; Affect</strong> for the full emotion→color table. Brightness and breathe speed are tunable via the <code>LED_*</code> settings.</div>
 <h3>${T('camera games','Camera Games')} (Kids Mode)</h3>
-<p>IRIS can see, and it plays games with the camera (kids mode by default; they also work in adult mode). Say a game name and hold things up — IRIS plays a quick "Ooh, let me see…" line, captures a frame, reacts in character, and keeps the game going for several back-and-forth turns (S168) so you never have to re-say the wake word between guesses. No beep between turns, and for Show Me / Make a Face it re-looks at the camera each turn so you can show something new.</p>
+<p>IRIS can see, and it plays games with the camera (kids mode by default; they also work in adult mode). Say a game name and hold things up: IRIS plays a quick "Ooh, let me see…" line, captures a frame, reacts in character, and keeps the game going for several back-and-forth turns so you never have to re-say the wake word between guesses. No beep between turns, and for Show Me, Make a Face and Guess My Drawing it re-looks at the camera each turn so you can show something new. Since S216 she runs a real autofocus cycle before each capture, so expect a short pause (roughly 1.7 seconds) before she reacts. That pause is the camera focusing, not a hang.</p>
 <ul>
-<li><strong>I Spy</strong> — "let's play I spy" → IRIS spies something and clues you with a color or shape; you guess and it reacts ("Nope, try again!" / "You got it!") and keeps playing.</li>
-<li><strong>Show Me</strong> — "guess what I'm holding" → hold an object up; IRIS guesses it, then hold up a <em>second</em> object and it looks again (re-captures the frame each turn).</li>
-<li><strong>Make a Face</strong> — "guess my face" → pose; IRIS reads your expression, then make <em>another</em> face and it re-reads it.</li>
+<li><strong>I Spy:</strong> "let's play I spy" → IRIS states the roles up front ("I'm the spy, you're the finder"), picks something in the room she's genuinely confident about, and gives you a clue: color first, then shape, then location if you need more. Every guess is checked in code against the actual thing she picked, so she can never be wrong about her own answer and a close guess still counts (reworked S210: the old version could argue with a correct guess).</li>
+<li><strong>Show Me:</strong> "guess what I'm holding" → hold an object up; IRIS guesses it, then hold up a <em>second</em> object and it looks again (re-captures the frame each turn).</li>
+<li><strong>Make a Face:</strong> "guess my face" → pose; IRIS reads your expression, then make <em>another</em> face and it re-reads it.</li>
+<li><strong>Rock Paper Scissors:</strong> "rock paper scissors" → IRIS locks in her move before she ever looks at the camera (she says so, so you know it's fair), counts down "Rock… Paper… Scissors… SHOOT!", then reads your hand. Best of 3 wins the match; she rolls straight into the next round on her own (S216) up to a 9-round match, and "stop" ends it.</li>
+<li><strong>Guess My Drawing:</strong> "guess my drawing" / "guess what I drew" → draw something, hold it up, and IRIS guesses what it is. She re-looks at the camera on every turn, so you can hold up a new drawing and keep going (S219).</li>
+</ul>`;
+}
+
+/* ── Kids Mode family guide (S199) ────────────────────── */
+/* [what you see or hear, what it means, what to do], written FOR the kids. */
+const KIDS_SIGNALS = [
+  ["The light breathes <b>yellow</b>","Kids mode is ON: IRIS is in her kid brain","Just say \"Hey Iris\" and talk to her"],
+  ["The light breathes <b>blue-green</b>","Grown-up mode: she'll sound drier and more sarcastic","Say <b>\"Hey Iris… play with me\"</b> to switch her to kids mode"],
+  ["She says a quick hello when you say \"Hey Iris\"","She heard her name and is listening","Ask your question, then stop talking; she'll wait through your pauses"],
+  ["Two soft <b>falling</b> blips (\"mm!\") + a curious face","She's GOT your words and is starting to think","Nothing! An answer is coming"],
+  ["\"Ooh, good one. Let me think.\"","The think is taking a moment","Keep waiting; she has not forgotten you"],
+  ["\"Still thinking. This one's chewy.\"","A really big think: her brain computer in the other room may be waking up","Almost there. Big questions take longer"],
+  ["Her mouth moves with the words","She's answering","Listen! (Say <b>\"stop\"</b> or <b>\"be quiet\"</b> if you want her to stop)"],
+  ["Two <b>rising</b> blips + a curious face after she asks YOU something","It's YOUR turn: her ears are already open","Just answer. No \"Hey Iris\" needed"],
+  ["\"My ears glitched. Robots do that. Say it again?\"","She couldn't make out what you said","Say it again, a little louder and closer"],
+  ["\"I'm popping back to grown-up mode now…\"","You were quiet a while, so kids mode switched itself off","Say \"play with me\" any time to bring her back"],
+];
+
+function renderKids() {
+  const sig = KIDS_SIGNALS.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td class="tfix">${r[2]}</td></tr>`).join('');
+  document.getElementById('div-kids').innerHTML = `
+<h3>What kids mode is</h3>
+<p>In kids mode IRIS talks to a completely different "brain" (the ${T('iris-kids','kids persona')}) that is warmer, plays along, hands the turn back with real questions, and never makes a kid feel small for trying. She listens longer through mid-sentence pauses, plays a "got it" sound the instant you stop talking, and fills every thinking gap with a ${T('gap fillers','thinking line')} so there is never scary silence. The breathing light turns <b>yellow</b> so everyone can see which mode she is in.</p>
+<h3>How to start it</h3>
+<p><b>Kids can do it by voice:</b> say <b>"Hey Iris… play with me"</b> (or "iris kids mode"). <b>Parents:</b> the Control Panel's <b>Kids</b> tab has the mode toggle, and kids mode switches itself back to grown-up mode after a quiet stretch (default 30 minutes, tunable on the same tab). Since S199 she <em>says so</em> when she switches back, and the way back in is always the same: "play with me."</p>
+<h3>The signals: read this bit together</h3>
+<table><tr><th>What you see or hear</th><th>What it means</th><th>What to do</th></tr>${sig}</table>
+<h3>Games she can play</h3>
+<p>She can really see through her camera. Say <b>"let's play I spy"</b>, <b>"guess what I'm holding"</b>, <b>"guess my face"</b>, <b>"rock paper scissors"</b>, or <b>"guess my drawing":</b> full game details are in ${T('camera games','Camera Games')} under Lights, Gestures &amp; Voice. Games keep going for several turns without re-saying "Hey Iris".</p>
+<h3>Night time</h3>
+<p>IRIS sleeps from 9 at night until 7 in the morning. If you say <b>"Hey Iris"</b> while she's asleep she'll wake up for a real conversation and answer you, then quietly go back to sleep afterwards. (One "Hey Iris" is enough now; you no longer need to say it twice.)</p>
+<h3>For parents</h3>
+<ul>
+<li><b>The notebook.</b> The Kids tab has a per-child profile ("the little notebook Dad keeps"): one interest per line. IRIS folds it into every kids turn so she asks about <em>your</em> kids' actual things. She is honest with the kids that this notebook IS her memory: on her own, between conversations, she remembers nothing.</li>
+<li><b>She never goes silent on a kid.</b> A mumble that fails the microphone gate, an empty transcript, or a garbled one all get a spoken re-ask (never blame-the-kid wording). If she seems to ignore a child twice in a row, check the Logs tab for <code>[REC]</code> and <code>[REASK]</code> lines.</li>
+<li><b>Stopping her.</b> In kids mode only <b>"stop"</b> and <b>"be quiet"</b> interrupt her mid-sentence, and shouts right as she starts talking are ignored as talk-along (S199), so kids talking over her doesn't cut her off or crank the volume anymore.</li>
+<li><b>Everything is local.</b> The kids' voices, the profile, and every reply stay on the machines in this house. Nothing goes to any cloud service.</li>
+<li><b>Tuning.</b> Kids listening windows live on the <b>Audio</b> tab (kids rows), turn-timing and cues on the <b>Kids</b> tab, and the kids voice-interrupt settings on the <b>Gestures</b> tab. Everything applies live: no restart.</li>
 </ul>`;
 }
 
 /* Boot render */
 renderOverview();
+renderKids();
 renderArch();
 renderPipeline();
 renderPersonality();

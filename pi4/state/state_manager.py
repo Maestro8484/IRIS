@@ -26,6 +26,10 @@ class StateManager:
         self.kids_mode: bool = False
         self.eyes_sleeping: bool = False
 
+        # S202: voice-requested quiet break ("do not disturb"). Epoch seconds
+        # until which the wakeword loop ignores every trigger; 0.0 = not on break.
+        self.break_until: float = 0.0
+
     # ── Conversation helpers ──────────────────────────────────────────────────
 
     def clear_conversation(self):

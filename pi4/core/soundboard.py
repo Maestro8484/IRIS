@@ -193,6 +193,24 @@ _DEFAULT_CLIPS = [
     _c("iris_clip_080.wav", [], [], "I suppose."),
 ]
 
+# Flat quip categories, i.e. everything shaped {"enabled", "lines"} with or
+# without an "emotion". _total_quip_lines(), _enforce_total_lines() and
+# validate() all iterate these tuples, so adding a category is a one-line edit
+# here plus its seed in _DEFAULT_QUIPS -- no third place to forget (RD-047).
+_EMOTION_LINE_CATEGORIES = ("double_tap", "post_speech", "sleep_window", "kids_reask",
+                            "kids_wake", "kids_mode_off",
+                            # S202: quiet-break spoken lines. All pre-cached PCM so
+                            # they play with GandalfAI asleep (the resume fires ~20
+                            # min after entry, when GandalfAI has re-slept).
+                            "break_ack", "break_resume", "break_resume_ask")
+_PLAIN_LINE_CATEGORIES   = ("kids_fillers", "kids_fillers_stage2")
+_FLAT_LINE_CATEGORIES    = _EMOTION_LINE_CATEGORIES + _PLAIN_LINE_CATEGORIES
+
+# Per-child banked categories: {"enabled", "emotion", "banks": {bank: [lines]}}.
+# Same one-line-to-add rule as the flat categories above.
+_BANK_CATEGORIES = ("kids_prompts",)
+_BANK_KEYS       = ("ava", "ben", "shared")
+
 # QUIPS: verbatim from assistant.py hardcoded structures. Each category seeds
 # enabled=True (current behavior). Wake quips keep their time bands + emotion.
 _DEFAULT_QUIPS = {
@@ -233,17 +251,125 @@ _DEFAULT_QUIPS = {
         "You just asked that. I'm still here.",
         "Yep. Still running. Still watching.",
         "Going somewhere? Because I'm not.", "Present. Try me."]},
+    # RD-047: played INSTEAD of a wake quip when a lone wakeword lands inside the
+    # sleep window. The wake bands all invite speech ("Go ahead.", "What?") and
+    # the sleep branch then re-sleeps without recording -- to a 6-year-old that
+    # reads as being ignored. These lines are honest and teach the S194
+    # double-tap break-through instead of inviting a reply that goes nowhere.
+    "sleep_window": {"enabled": True, "emotion": "SLEEPY", "lines": [
+        "Still asleep. Say my name twice if you really need me.",
+        "Sleeping. Two hey-Irises wakes me up properly.",
+        "Zzz. Double-tap my name if it's important.",
+        "I'm off duty. Say it twice and I'll make an exception.",
+        "Asleep. Twice means you mean it."]},
     "post_speech": {"enabled": True, "emotion": "AMUSED", "lines": [
         "I literally just answered that.", "Give it a moment.",
         "I just finished. Go on.", "That was like five seconds ago.",
         "Still echoing from that last one.",
         "Ask me something new. I dare you."]},
+    # S199 T2: kid-register wake bank. The adult "wake" bands are deliberately
+    # snarky ("Still here. Unfortunately.") -- right for adults, wrong register
+    # for a child. In kids mode the wake ack draws from THIS bank (flat, no time
+    # bands) and the RPQR snark cascade is skipped. Dry-British-warm, no PII.
+    "kids_wake": {"enabled": True, "emotion": "CURIOUS", "lines": [
+        "Hello you. What are we doing?",
+        "I'm listening. Go on.",
+        "Ooh, company. What's up?",
+        "Yes? I'm all ears. Well, all microphone.",
+        "Hi! What have you got for me?",
+        "Ready when you are.",
+        "You found me. What shall we do?",
+        "Go on then, I'm curious.",
+        "Right, I'm awake. What's the plan?",
+        "Hello again. I was hoping you'd come back."]},
+    # S199 T4: spoken when kids mode auto-offs after inactivity. The switch was
+    # silent, so hours later a kid's "hey Iris" landed on the ADULT persona with
+    # no warning (observed live 2026-07-10 20:14 -- "wind-up doll").
+    "kids_mode_off": {"enabled": True, "emotion": "SLEEPY", "lines": [
+        "I'm popping back to grown-up mode now. Say play with me when you want me back.",
+        "All quiet, so I'm switching to grown-up mode. Play with me brings me back.",
+        "Grown-up mode for now. You know the magic words: play with me."]},
+    # S202: quiet break ("hey iris, take a break / bugger off / shut the front
+    # door"). break_ack plays on ENTRY (acknowledges heard + going quiet);
+    # break_resume plays a couple of quips on the proactive wake ~20 min later;
+    # break_resume_ask is the reciprocal "shall I resume?" question that precedes
+    # the red-pulse mic-active yes/no listen. Dry-British-warm, no PII.
+    "break_ack": {"enabled": True, "emotion": "SLEEPY", "lines": [
+        "Right, I'll make myself scarce. Back in a bit.",
+        "Understood. Going quiet. Try not to miss me too much.",
+        "Say no more. I'll be over here, powered down and unbothered.",
+        "Consider me gone. Twenty minutes of blissful silence, coming up.",
+        "Fine by me, I could use the rest. Off I pop."]},
+    "break_resume": {"enabled": True, "emotion": "AMUSED", "lines": [
+        "And we're back. The silence was lovely, but I got bored of myself.",
+        "Right, break's over. I've recharged my sarcasm.",
+        "I'm up. I spent the whole time thinking about how right I usually am.",
+        "Reactivating. I trust nothing important happened without me.",
+        "Twenty minutes of nothing. Riveting. Anyway, here I am."]},
+    "break_resume_ask": {"enabled": True, "emotion": "CURIOUS", "lines": [
+        "Shall I get back to it, or do you need a bit longer?",
+        "Ready for me again, or should I keep my head down?",
+        "Back to normal service? Say the word. Say nothing and I'll assume yes.",
+        "Am I on duty again, or would you like more peace and quiet?",
+        "Good to resume, or shall I make myself scarce a while longer?"]},
     "kids_fillers": {"enabled": True, "lines": [
-        "Ooh, good one. Let me think!", "Hmmm, brain loading!",
-        "Beep boop, computing fun stuff!", "Ooh, tricky! Thinking robot thoughts.",
-        "Hang on, my gears are turning!", "Oh, I LIKE this question.",
-        "Hang on, doing robot math!", "Ooh, let me dig that up!",
-        "Gimme a sec, supercomputing!", "Whoa, big question. One sec!"]},
+        "Ooh, good one. Let me think.", "Hmm, thinking cap on.",
+        "Right, give me a tick.", "Ooh, tricky. I like tricky.",
+        "Hang on, my gears are turning.", "Oh, I LIKE this question.",
+        "Hang on, doing robot maths.", "Ooh, let me dig that up.",
+        "One tick, brain whirring.", "Whoa, big question. One sec.",
+        # RD-047: dog-flavored. A robot that knows THEIR dogs by name is instant
+        # relational credibility, and a filler is the cheapest place to spend it.
+        "Hang on, thinking harder than the dogs at the door.",
+        "One sec, my brain is doing Biscuit zoomies.",
+        "Loading. Quieter than Pip, at least.",
+        "Hmm. Give me a Rusty-sized nap of thinking time."]},
+    # RD-047: second-stage filler, fires ~5s in when the first filler has already
+    # played and first audio STILL hasn't arrived (cold GandalfAI, long reply).
+    "kids_fillers_stage2": {"enabled": True, "lines": [
+        "Still thinking. This one's chewy.",
+        "Bear with me, big question.",
+        "My brain's in the other room. It's walking slowly today."]},
+    # RD-047: spoken instead of silence on the three drop paths (RMS gate, empty
+    # transcript, hallucination filter). Kids mode only -- adults read silence
+    # correctly, a 6-year-old reads it as being ignored.
+    # S199 T2 register pass: re-asks must blame the ROBOT, never the child.
+    # Replaced "It wasn't English. Again?" (mocks the kid's speech) and the
+    # borderline "sounded like cereal" line with self-blame equivalents.
+    "kids_reask": {"enabled": True, "emotion": "CURIOUS", "lines": [
+        "My ears glitched. Robots do that. Say it again?",
+        "Hmm, I missed that. One more time?",
+        "My microphone blinked. Tell me again?",
+        "I lost that one in my wires. Once more?"]},
+    # RD-047: conversation starters, banked per child. DATA ONLY at S197 -- these
+    # are NOT pre-synthesized and no runtime consumer reads them yet (deliberate:
+    # 19 extra cached WAVs for an unbuilt feature is exactly the synth cost RD-031
+    # guards against). They are editable in the WebUI and counted against the line
+    # budget so a future consumer inherits an honest total.
+    "kids_prompts": {"enabled": True, "emotion": "CURIOUS", "banks": {
+        "ava": [
+            "If you could invent a brand-new word, what would it mean?",
+            "What's the most beautiful word you know? I collect them.",
+            "I can see colours but I can't smell anything at all. What does rain smell like? Describe it so a robot gets it.",
+            "What would you name a pet dragon, and what's its one weird rule?",
+            "Teach me something you know that I might not. I'll tell you if you stumped me.",
+            "What's a question grown-ups never answer properly?",
+            "You say one sentence, I say one sentence, we build a story. You start.",
+            "If your babies could talk for one minute, what would they say about you?",
+            "What does a horse know that a robot never will?"],
+        "ben": [
+            "Want to know a secret about how I work that most grown-ups don't understand?",
+            "If you built a robot, what would it do that I can't?",
+            "Estimate: how many words do you think I know? Guess, then I'll tell you how I actually 'know' words.",
+            "What's the best machine ever invented? Defend your answer, I'll argue back.",
+            "I can be wrong with total confidence. Humans call it lying. Mine's called hallucinating. Want to try to catch me doing it?",
+            "Explain lacrosse to me like I'm a robot who's never had a body.",
+            "Dog Man or Bad Guys. Pick one, defend it. I'll take the other side."],
+        "shared": [
+            "One of you describes a thing, the other and I both guess. Human versus robot.",
+            "Ask me the same question twice and see if I answer differently. Then I'll tell you why that happens.",
+            "Which dog would make the best robot? Argue it out. I'm judging."],
+    }},
     "gesture_cues": {"enabled": True, "cues": {
         "VOL+": "Louder!", "VOL-": "Quieter!", "MUTE": "Muted.",
         "UNMUTE": "Sound on!", "STOP": "Okay, stopping.", "LISTEN": "I'm listening!"}},
@@ -308,10 +434,16 @@ def _total_quip_lines(quips: dict) -> int:
     n = 0
     for b in quips.get("wake", []):
         n += len(b.get("lines", []))
-    for key in ("double_tap", "post_speech", "kids_fillers"):
+    for key in _FLAT_LINE_CATEGORIES:
         c = quips.get(key)
         if isinstance(c, dict):
             n += len(c.get("lines", []))
+    for key in _BANK_CATEGORIES:
+        c = quips.get(key)
+        if isinstance(c, dict) and isinstance(c.get("banks"), dict):
+            for _lines in c["banks"].values():
+                if isinstance(_lines, list):
+                    n += len(_lines)
     toh = quips.get("top_of_hour")
     if isinstance(toh, dict) and isinstance(toh.get("overrides"), dict):
         n += len(toh["overrides"])
@@ -339,10 +471,16 @@ def _enforce_total_lines(quips: dict) -> None:
 
     for b in quips.get("wake", []):
         b["lines"] = _take(b.get("lines", []))
-    for key in ("double_tap", "post_speech", "kids_fillers"):
+    for key in _FLAT_LINE_CATEGORIES:
         c = quips.get(key)
         if isinstance(c, dict):
             c["lines"] = _take(c.get("lines", []))
+    for key in _BANK_CATEGORIES:
+        c = quips.get(key)
+        if isinstance(c, dict) and isinstance(c.get("banks"), dict):
+            for _bk in list(c["banks"].keys()):
+                if isinstance(c["banks"][_bk], list):
+                    c["banks"][_bk] = _take(c["banks"][_bk])
     toh = quips.get("top_of_hour")
     if isinstance(toh, dict) and isinstance(toh.get("overrides"), dict):
         ov = list(toh["overrides"].items())
@@ -409,8 +547,8 @@ def validate(data: dict) -> dict:
                 })
             if wake:
                 oq["wake"] = wake
-        # simple line categories
-        for key in ("double_tap", "post_speech"):
+        # simple line categories (with emotion)
+        for key in _EMOTION_LINE_CATEGORIES:
             c = q.get(key)
             if isinstance(c, dict):
                 emo = c.get("emotion")
@@ -419,12 +557,30 @@ def validate(data: dict) -> dict:
                     "emotion": emo if emo in VALID_EMOTIONS else oq[key]["emotion"],
                     "lines":   _clean_lines(c.get("lines")),
                 }
-        kf = q.get("kids_fillers")
-        if isinstance(kf, dict):
-            oq["kids_fillers"] = {
-                "enabled": bool(kf.get("enabled", True)),
-                "lines":   _clean_lines(kf.get("lines")),
-            }
+        # simple line categories (no emotion)
+        for key in _PLAIN_LINE_CATEGORIES:
+            c = q.get(key)
+            if isinstance(c, dict):
+                oq[key] = {
+                    "enabled": bool(c.get("enabled", True)),
+                    "lines":   _clean_lines(c.get("lines")),
+                }
+        # per-child banked categories
+        for key in _BANK_CATEGORIES:
+            c = q.get(key)
+            if isinstance(c, dict):
+                banks_in = c.get("banks")
+                banks = dict(oq[key]["banks"])   # keep fixed keys/defaults
+                if isinstance(banks_in, dict):
+                    for bk in _BANK_KEYS:
+                        if bk in banks_in:
+                            banks[bk] = _clean_lines(banks_in.get(bk))
+                emo = c.get("emotion")
+                oq[key] = {
+                    "enabled": bool(c.get("enabled", True)),
+                    "emotion": emo if emo in VALID_EMOTIONS else oq[key]["emotion"],
+                    "banks":   banks,
+                }
         toh = q.get("top_of_hour")
         if isinstance(toh, dict):
             emo  = toh.get("emotion")

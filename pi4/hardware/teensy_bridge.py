@@ -11,12 +11,19 @@ Provides:
 """
 
 import os
+import re
 import threading
 import time
 
 import serial
 
 from core.config import TEENSY_PORT, TEENSY_BAUD
+from core.protocol import EXPECTED_EYES_PROTOCOL, record_component_version
+
+# Boot/VERSION-request banner, e.g.
+#   [VER] IRIS-EYES firmware=S213 built=Jul 18 2026 proto=1
+# (proto= absent on pre-S213 firmware; built= contains spaces).
+_VER_RE = re.compile(r"\[VER\] IRIS-EYES firmware=(\S+) built=(.+?)(?: proto=(\d+))?$")
 
 # RD-031: routine high-rate serial traffic was ~90% of journal volume — inbound
 # sleep-frame echoes ([SR] …) plus per-turn outbound MOUTH/MOUTH_INTENSITY updates
@@ -25,9 +32,10 @@ from core.config import TEENSY_PORT, TEENSY_BAUD
 # connect/disconnect, [VER] and FACE: state are always logged.
 DEBUG_SERIAL = os.environ.get("IRIS_DEBUG_SERIAL", "").lower() not in ("", "0", "false", "no")
 
-# Outbound command prefixes that fire at high rate (mouth animation / idle breathe;
-# GAZE: added RD-033 — OGLE streams gaze targets at the camera frame rate).
-_ROUTINE_TX_PREFIXES = ("MOUTH:", "MOUTH_INTENSITY:", "GAZE:")
+# Outbound command prefixes that fire at high rate (mouth animation / idle breathe).
+# (S213: dropped the stale "GAZE:" entry -- OGLE was retired S140/S184 and nothing
+# sends GAZE: anymore; the serial-contract audit flagged it as dead residue.)
+_ROUTINE_TX_PREFIXES = ("MOUTH:", "MOUTH_INTENSITY:")
 # Inbound line prefixes that are routine per-frame chatter.
 _ROUTINE_RX_PREFIXES = ("[SR]",)
 
@@ -54,6 +62,9 @@ class TeensyBridge:
         self._ps_present = None   # None=unknown, True/False once a real signal is seen
         self._ps_face    = None
         self._ps_last_hb = 0.0
+        self._fw_version = None   # from [VER] (S213: audit fix -- was logged, never parsed)
+        self._fw_built   = None
+        self._fw_proto   = None   # None until a proto=-carrying firmware reports
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _open(self):
@@ -93,6 +104,29 @@ class TeensyBridge:
             try:
                 line = ser.readline().decode(errors="ignore").strip()
                 if line:
+                    m = _VER_RE.search(line)
+                    if m:
+                        # Bounded: [VER] arrives only at Teensy boot or on an
+                        # explicit VERSION request (RD-031 safe).
+                        self._fw_version = m.group(1)
+                        self._fw_built   = m.group(2)
+                        self._fw_proto   = int(m.group(3)) if m.group(3) else None
+                        record_component_version(
+                            "eyes", firmware=self._fw_version,
+                            built=self._fw_built, proto=self._fw_proto)
+                        if self._fw_proto is None:
+                            print("[EYES] *** PROTOCOL UNKNOWN: firmware "
+                                  f"{self._fw_version} predates protocol versioning "
+                                  f"(Pi expects proto={EXPECTED_EYES_PROTOCOL}); "
+                                  "serial contract unverifiable until reflash (RD-048)",
+                                  flush=True)
+                        elif self._fw_proto != EXPECTED_EYES_PROTOCOL:
+                            print("[EYES] *** PROTOCOL MISMATCH: firmware "
+                                  f"{self._fw_version} proto={self._fw_proto}, Pi "
+                                  f"expects proto={EXPECTED_EYES_PROTOCOL} -- serial "
+                                  "commands may silently no-op; reconcile firmware "
+                                  "and pi4/core/protocol.py (RD-048). Warn-only, "
+                                  "link stays up.", flush=True)
                     if "Person Sensor detected" in line:
                         self._ps_present = True
                     elif "no ACK at 0x62" in line or "No Person Sensor" in line:

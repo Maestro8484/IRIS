@@ -4,7 +4,6 @@
 
 static ServoEasing panServo;
 static bool servoAttached = true;
-static float filteredPan = 90.0;  // low-pass smoothed command sent to servo
 static float filteredFaceCenterX = 128.0;  // low-pass smoothed raw sensor readout (see FACE_POS_FILTER_ALPHA)
 
 float desiredPan = 90.0;
@@ -12,41 +11,66 @@ float desiredPan = 90.0;
 void setupPanServo() {
   panServo.attach(2);
   panServo.write(desiredPan);
-  filteredPan = desiredPan;
   panServo.setEasingType(EASE_CUBIC_IN_OUT);
   enableServoEasingInterrupt();
   servoAttached = true;
 }
 
+void attachPanServo() {
+  // Re-attach at ServoEasing's stored currentAngle. When the servo-rail sense soft-start
+  // holds this equal to the frozen physical angle, the first pulse matches the horn and
+  // the servo does not jump. Idempotent.
+  if (!servoAttached) {
+    panServo.attach(2);
+    servoAttached = true;
+  }
+}
+
+void detachPanServo() {
+  // Stop PWM output. ServoEasing keeps its last currentAngle, so a later attach resumes
+  // from the same commanded angle. Idempotent.
+  if (servoAttached) {
+    panServo.detach();
+    servoAttached = false;
+  }
+}
+
 void updatePanFromFace(float faceCenterX) {
   // Smooth the raw sensor reading first — the Person Sensor's own face-box detector
-  // jitters frame to frame even on a static, perpendicular face. Feeding that noise
-  // straight into the dead-zone gate below let occasional noisy frames exceed the
-  // threshold and permanently nudge desiredPan, which random-walked into visible hunting.
+  // jitters frame to frame even on a static, perpendicular face.
   filteredFaceCenterX += (faceCenterX - filteredFaceCenterX) * FACE_POS_FILTER_ALPHA;
+
+  // ---- Anti-windup gate (S208 hunting fix) -----------------------------------------
+  // The Person Sensor rides on the pan platform, so pan tracking is a CLOSED loop: a
+  // pan move re-centers the face in the sensor frame. The servo is deliberately slow
+  // (PAN_TRACK_SPEED). Previously `desiredPan -= panDelta` ran on EVERY 50 ms poll, so
+  // while the slow servo was still gliding toward the last target, desiredPan kept
+  // accumulating error the plant had not yet nulled — command rate far outran plant
+  // response. That integrator wind-up overshot the face and drove a sustained
+  // side-to-side limit cycle (the "hunting" prior sessions kept trying to bury under
+  // extra low-pass layers). Only evaluating a new correction once the servo has FULLY
+  // SETTLED makes every correction act on a fresh, post-move reading: a converging
+  // staircase of ever-smaller steps instead of a wind-up oscillation.
+  if (panServo.isMoving()) return;
 
   float panDelta = (filteredFaceCenterX - 128) * PAN_SPEED;
 
-  // Dead zone: ignore sub-threshold sensor jitter (~10 px)
-  if (abs(panDelta) > PAN_DEAD_ZONE_DEG) {
-    desiredPan -= panDelta;
-    desiredPan = constrain(desiredPan, PAN_MIN, PAN_MAX);
-  }
+  // Dead zone: ignore sub-threshold sensor jitter (~10 px). This is now the single
+  // jitter gate — a face within ~10 px of center holds position, no micro-moves.
+  if (abs(panDelta) <= PAN_DEAD_ZONE_DEG) return;
 
-  // Low-pass filter glides toward desiredPan every tick
-  filteredPan += (desiredPan - filteredPan) * PAN_FILTER_ALPHA;
+  desiredPan -= panDelta;
+  desiredPan = constrain(desiredPan, PAN_MIN, PAN_MAX);
 
-  // Only command servo when it has fully settled AND filtered target is far enough from physical position.
-  // isMoving() is the natural gate — no arbitrary timer, no staircase of mid-convergence commands.
-  if (!panServo.isMoving() &&
-      abs(filteredPan - panServo.getCurrentAngle()) > PAN_MOVE_THRESHOLD_DEG) {
-    if (!servoAttached) {
-      panServo.attach(2);
-      servoAttached = true;
-    }
-    panServo.setEasingType(EASE_LINEAR);
-    panServo.startEaseTo(filteredPan, PAN_TRACK_SPEED);
+  // Servo is settled (gate above) → issue the single new correction. Motion stays
+  // "eerily slow and smooth" via the slow linear ease; the settle-gate guarantees we
+  // never stack a command on top of an in-flight move.
+  if (!servoAttached) {
+    panServo.attach(2);
+    servoAttached = true;
   }
+  panServo.setEasingType(EASE_LINEAR);
+  panServo.startEaseTo(desiredPan, PAN_TRACK_SPEED);
 }
 
 void updatePanIdle(unsigned long faceLostMs) {

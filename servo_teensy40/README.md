@@ -9,8 +9,8 @@
 - I2C SDA: pin 18 (Wire default, shared bus)
 - I2C SCL: pin 19 (Wire default, shared bus)
 - Person Sensor: addr 0x62
-- PAJ7620U2 gesture sensor (HiLetgo): addr 0x73
-- Current sensor status: HW-004 BLOCKED — installed PAJ7620U2 confirmed dead; replacement GY-PAJ7620 on order
+- PAJ7620U2 gesture sensor (CQRobot, Amazon B083KNC1LF): addr 0x73, `GESTURE_MOUNT_DEGREES 0`
+- Current sensor status: HW-004 CLOSED. The HiLetgo board died at S69; the CQRobot board replaced it at S82 and was confirmed firing at S121.
 - Pi4 comms: USB CDC serial at 115200 baud (/dev/ttyIRIS_SERVO)
 - Servo power: external 5V supply (not from Teensy rail)
 

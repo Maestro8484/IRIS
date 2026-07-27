@@ -13,7 +13,7 @@
 
 set -u
 
-KOKORO="http://192.168.1.3:8004/v1/audio/speech"
+KOKORO="http://192.168.0.20:8004/v1/audio/speech"
 
 # --- Round config -----------------------------------------------------------
 OUTDIR="$HOME/kokoro_voice_samples/round1"

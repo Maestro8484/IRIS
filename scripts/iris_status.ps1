@@ -38,7 +38,7 @@ $pi4Status = @{}
 if (-not $SkipPi4) {
     try {
         $sshOut = ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no `
-                      pi@192.168.1.200 `
+                      pi@192.168.0.10 `
                       'systemctl is-active assistant; systemctl is-active iris_web; uptime -p' `
                       2>&1
         $lines = ($sshOut -split "`n") | Where-Object { $_ -match '\S' }

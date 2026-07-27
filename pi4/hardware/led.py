@@ -82,8 +82,8 @@ class APA102:
 
     def show_idle_kids(self):
         def anim():
-            from core.config import LED_KIDS_PEAK, LED_KIDS_PERIOD
-            steps = 80; period = LED_KIDS_PERIOD; floor = 1; peak = LED_KIDS_PEAK
+            from core.config import LED_KIDS_PEAK, LED_KIDS_FLOOR, LED_KIDS_PERIOD
+            steps = 80; period = LED_KIDS_PERIOD; floor = LED_KIDS_FLOOR; peak = LED_KIDS_PEAK
             while not self._stop_anim.is_set():
                 for i in range(steps):
                     if self._stop_anim.is_set():
@@ -222,6 +222,12 @@ class APA102:
         "SURPRISED": (12, 12,12, 0.3, True),   # white flash → cyan
         "SAD":       (0,   0, 6, 6.0, False),  # dim blue, 6s
         "CONFUSED":  (8,   0, 8, 2.5, False),  # pulsing magenta, 2.5s
+        # S241 wit registers. ANNOYED sits warm and amber -- deliberately NOT
+        # the ANGRY red, because the whole point of the tag is playful-not-mean.
+        # EXASPERATED is a muted violet, cooler and slower: "not this again".
+        # Both colours are chosen, NOT yet bench-verified on the APA102s.
+        "ANNOYED":     (10,  4, 0, 2.2, False),  # warm amber, 2.2s
+        "EXASPERATED": (6,   2, 9, 2.0, False),  # muted violet, 2.0s
     }
 
     def show_emotion(self, emotion: str):
@@ -308,6 +314,43 @@ class APA102:
                     s = (math.sin(2 * math.pi * t - math.pi / 2) + 1) / 2
                     v = floor_ + (peak - floor_) * s
                     self._write([(int(v * 0.5), 0, int(v))] * self.n, brightness=bright)
+                    time.sleep(period / steps)
+        self._run_anim(anim)
+
+    def show_break(self):
+        """S202: quiet-break ("do not disturb") indicator. A slow, dim AMBER
+        breathe -- deliberately distinct from show_sleep()'s indigo (scheduled
+        sleep) and from the red confirm pulse, so a glance tells the three apart.
+        Runs for the whole break window; the resume sequence replaces it."""
+        def anim():
+            steps = 80; period = 6.0; floor = 1; peak = 22
+            while not self._stop_anim.is_set():
+                for i in range(steps):
+                    if self._stop_anim.is_set():
+                        return
+                    t = i / steps
+                    s = (math.sin(2 * math.pi * t - math.pi / 2) + 1) / 2
+                    v = floor + (peak - floor) * (s ** 1.8)
+                    # amber: full red, ~40% green, no blue
+                    self._write([(int(v), int(v * 0.4), 0)] * self.n)
+                    time.sleep(period / steps)
+        self._run_anim(anim)
+
+    def show_listen_confirm(self):
+        """S202: mic-active RED pulse for the resume yes/no window. A brisk,
+        bright red breathe that reads as 'I'm listening, answer now' -- brighter
+        and faster than show_break() and a different hue from the amber break, so
+        it is unmistakably the 'respond' cue, not the 'resting' cue."""
+        def anim():
+            steps = 40; period = 1.1; floor = 3; peak = 45
+            while not self._stop_anim.is_set():
+                for i in range(steps):
+                    if self._stop_anim.is_set():
+                        return
+                    t = i / steps
+                    s = (math.sin(2 * math.pi * t - math.pi / 2) + 1) / 2
+                    v = int(floor + (peak - floor) * (s ** 1.6))
+                    self._write([(v, 0, 0)] * self.n)
                     time.sleep(period / steps)
         self._run_anim(anim)
 

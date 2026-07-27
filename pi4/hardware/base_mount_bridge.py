@@ -1,10 +1,18 @@
 import json
+import re
 import socket
 import threading
 import time
 
 from core.config import CMD_PORT
+from core.protocol import EXPECTED_SERVO_PROTOCOL, record_component_version
 from hardware.audio_io import handle_volume_command
+
+# T4.0 boot banner, e.g. "VER servo fw S213 proto=1" (proto= absent pre-S213).
+# Emitted ONCE at Teensy boot; the T4.0 link has no VERSION request command, so
+# the parsed value is cached with seen_ts and goes stale rather than refreshed
+# (deliberate -- do NOT make the link bidirectional for this).
+_SERVO_VER_RE = re.compile(r"^VER servo fw (\S+)(?: proto=(\d+))?$")
 
 _CONFIG_PATH = "/home/pi/iris_config.json"
 # WebUI → T4.0 command path. base_mount_bridge owns /dev/ttyIRIS_SERVO, so the
@@ -38,9 +46,10 @@ def _load_gesture_map():
         # was saved (e.g. RIGHT) still dispatch their default action.
         merged = dict(_DEFAULT_GESTURE_MAP)
         merged.update(cfg.get("GESTURE_MAP", {}))
-        return merged
+        enabled = bool(cfg.get("GESTURE_ENABLED", True))
+        return enabled, merged
     except Exception:
-        return _DEFAULT_GESTURE_MAP
+        return True, _DEFAULT_GESTURE_MAP
 
 
 class BaseMountBridge:
@@ -194,10 +203,35 @@ class BaseMountBridge:
                     _err_logged = False
                     self._apply_stored_servo_cfg()
                 line = self._ser.readline().decode("utf-8", errors="ignore").strip()
-                if not line or line.startswith("DIAG:") or line.startswith("PSLED="):
+                if not line:
                     continue
-                gesture_map = _load_gesture_map()
+                m = _SERVO_VER_RE.match(line)
+                if m:
+                    # S213 audit fix: this boot banner used to fall through the
+                    # gesture map as action=SKIP and was effectively discarded.
+                    fw, proto = m.group(1), (int(m.group(2)) if m.group(2) else None)
+                    record_component_version("servo", firmware=fw, proto=proto)
+                    print(f"[BASE] servo firmware {fw} proto={proto}", flush=True)
+                    if proto is None:
+                        print("[BASE] *** PROTOCOL UNKNOWN: servo firmware "
+                              f"{fw} predates protocol versioning (Pi expects "
+                              f"proto={EXPECTED_SERVO_PROTOCOL}) (RD-048)", flush=True)
+                    elif proto != EXPECTED_SERVO_PROTOCOL:
+                        print(f"[BASE] *** PROTOCOL MISMATCH: servo firmware {fw} "
+                              f"proto={proto}, Pi expects "
+                              f"proto={EXPECTED_SERVO_PROTOCOL} -- gesture/serial "
+                              "contract may have drifted (RD-048). Warn-only.",
+                              flush=True)
+                    continue
+                # DIAG:/PSLED= = existing skips; PAN=/I2C_SCAN* = S213 audit fix
+                # (diagnostic output was falling through to the gesture map).
+                if line.startswith(("DIAG:", "PSLED=", "PAN=", "I2C_SCAN")):
+                    continue
+                enabled, gesture_map = _load_gesture_map()
                 action = gesture_map.get(line, "SKIP")
+                if not enabled:
+                    print(f"[GESTURE] gesture={line} action=DISABLED", flush=True)
+                    continue
                 print(f"[GESTURE] gesture={line} action={action}", flush=True)
                 if action != "SKIP":
                     self._dispatch(action)

@@ -5,7 +5,7 @@ Kokoro TTS client for the harness. Uses the verified OpenAI-compatible
 /v1/audio/speech endpoint on GandalfAI.
 
 Verified contract (inspected 2026-05-30 via docker + curl /openapi.json):
-  POST http://192.168.1.3:8004/v1/audio/speech
+  POST http://192.168.0.20:8004/v1/audio/speech
   Schema: OpenAISpeechRequest
   Required:  input (str)
   Optional:
@@ -24,7 +24,7 @@ Production voice/speed pulled from core.config: bm_lewis / 1.0
 """
 import requests
 
-KOKORO_URL   = "http://192.168.1.3:8004/v1/audio/speech"
+KOKORO_URL   = "http://192.168.0.20:8004/v1/audio/speech"
 KOKORO_VOICE = "bm_lewis"
 KOKORO_SPEED = 1.0
 

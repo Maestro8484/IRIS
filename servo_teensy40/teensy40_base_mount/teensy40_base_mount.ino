@@ -1,7 +1,7 @@
 /*
 IRIS project — Teensy 4.0
 Pan-only servo controller with Person Sensor + PAJ7620U2 gesture sensor
-Last revised: 2026-05-29 joe schmidt
+Last revised: 2026-05-29 IRIS project
 
 Pin#   Label
 2      Pan servo PWM
@@ -34,8 +34,30 @@ tracking decode, pan_servo.* ServoEasing wrapper, diag.h serial macros.
 
 extern "C" void _reboot_Teensyduino_(void);
 
+// Firmware tag — printed unconditionally at boot on /dev/ttyIRIS_SERVO so the running
+// build can be confirmed after a flash (grep the serial for "VER"). Bump every flash.
+#define FW_VERSION "S243b"
+
+// Serial protocol contract version (RD-048 move 2, S213). Bump when the serial
+// command/emit contract changes (not on every flash). Baked into the boot VER
+// line; pi4/core/protocol.py EXPECTED_SERVO_PROTOCOL must be bumped in the same
+// commit. scripts/version_guard.py fails the flash preflight on silent drift.
+#define PROTOCOL_VERSION 1
+
 // Set to 1 to print a one-time I2C scan 10s after boot (diagnostic only)
 #define I2C_SCAN_DIAG 0
+
+// ---- Servo-rail power sense + soft-start (default OFF) ---------------------------
+// The servo 5V rail is switched by the enclosure toggle while the Teensy runs
+// continuously on Pi4 USB. Without sensing the rail, at power-on the DS3218MG slews at
+// full speed to whatever PWM setpoint is live. This flag, once the divider in
+// docs/servo_power_sense_softstart.md is physically wired, lets the firmware stop
+// commanding while the rail is off (so the software angle stays equal to the frozen
+// physical angle) and re-attach on power-on with a matching pulse — no jump.
+// DO NOT set to 1 until the divider is wired and bench-verified (Teensy 4.0 GPIO is
+// 3.3V-only; the raw 5V rail must be divided). See the doc.
+#define SERVO_PWR_SENSE      0
+#define SERVO_PWR_SENSE_PIN  14   // A0 — free, analog-capable; reads ~3.0V (rail on) / 0V (off)
 
 unsigned long lastFaceMs = 0;
 
@@ -47,8 +69,13 @@ void setup() {
   Serial.begin(115200);
   delay(8000);  // hold boot diagnostics — open serial monitor within 8s of power cycle
 
+  Serial.print("VER servo fw ");
+  Serial.print(FW_VERSION);
+  Serial.print(" proto=");
+  Serial.println(PROTOCOL_VERSION);
+
 #if SERIAL_DIAG
-  // ===== CODEX DIAGNOSTIC INSERT BEGIN: boot status and I2C presence probe =====
+  // Boot-time I2C presence probe. One-shot, so it costs nothing at runtime.
   Serial.println("DIAG: boot; servo commanded center=90 on PWM pin 2");
   Wire.beginTransmission(PERSON_SENSOR_I2C_ADDRESS);
   Serial.print("DIAG: Person Sensor 0x62 ACK=");
@@ -56,15 +83,21 @@ void setup() {
   Wire.beginTransmission(PAJ7620_ADDR);
   Serial.print("DIAG: PAJ7620U2 0x73 ACK=");
   Serial.println(Wire.endTransmission() == 0 ? "YES" : "NO");
-  // ===== CODEX DIAGNOSTIC INSERT END: boot status and I2C presence probe =====
+#endif
+
+#if SERVO_PWR_SENSE
+  // Rail-sense input. If the rail is off at boot, drop the servo so we never advance the
+  // commanded angle while it is dark (keeps software angle == frozen physical angle).
+  pinMode(SERVO_PWR_SENSE_PIN, INPUT);
+  if (digitalRead(SERVO_PWR_SENSE_PIN) == LOW) {
+    detachPanServo();
+  }
 #endif
 
   pajOk = paj7620Init();
 #if SERIAL_DIAG
-  // ===== CODEX DIAGNOSTIC INSERT BEGIN: PAJ7620U2 init result =====
   Serial.print("DIAG: PAJ7620U2 init=");
   Serial.println(pajOk ? "OK" : "FAIL");
-  // ===== CODEX DIAGNOSTIC INSERT END: PAJ7620U2 init result =====
 #endif
 }
 
@@ -101,6 +134,20 @@ void loop() {
 #endif
 
   pollGesture();
+
+#if SERVO_PWR_SENSE
+  // Servo-rail soft-start: freeze the commanded angle while the rail is off so it stays
+  // equal to the frozen physical angle; re-attach at that angle on power-on (no jump).
+  // Gestures above still run (they are serial-to-Pi4, independent of servo power).
+  static bool railWasOn = true;
+  bool railOn = (digitalRead(SERVO_PWR_SENSE_PIN) == HIGH);
+  if (railOn && !railWasOn) attachPanServo();  // power returned → re-attach at frozen angle
+  railWasOn = railOn;
+  if (!railOn) {
+    detachPanServo();  // rail off → stop PWM, hold software angle == physical angle
+    return;            // skip pan tracking this cycle
+  }
+#endif
 
   PersonResult ps = pollPersonSensor();
   if (!ps.ok) return;  // short read this cycle — hold pan (matches original early return)

@@ -26,8 +26,8 @@ import wave
 # same way the assistant (WorkingDirectory=/home/pi) sees them.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.error_voice import LINES, ERRVOICE_SUBDIR   # noqa: E402
-from services.tts import synthesize                    # noqa: E402
+from core.error_voice import LINES, KIDS_LINES, ERRVOICE_SUBDIR   # noqa: E402
+from services.tts import synthesize                                # noqa: E402
 
 CLIPS_ROOT = "/home/pi/clips"
 OUT_DIR = os.path.join(CLIPS_ROOT, ERRVOICE_SUBDIR)
@@ -43,23 +43,27 @@ def _write_wav(path: str, pcm: bytes):
 
 def main() -> int:
     os.makedirs(OUT_DIR, exist_ok=True)
+    # RD-047: both registers. Same keys, different basenames, one pass.
+    todo = [("adult", LINES), ("kids", KIDS_LINES)]
+    total = sum(len(d) for _, d in todo)
     ok = 0
-    for key, (basename, text) in LINES.items():
-        try:
-            pcm = synthesize(text)
-        except Exception as e:
-            print(f"[GEN]  {key}: synth FAILED ({e})", flush=True)
-            continue
-        if not pcm:
-            print(f"[GEN]  {key}: empty PCM -- skipped", flush=True)
-            continue
-        out = os.path.join(OUT_DIR, basename)
-        _write_wav(out, pcm)
-        dur = len(pcm) / 2 / 48000.0
-        print(f"[GEN]  {key}: {basename} ({dur:.1f}s, {len(pcm)}B PCM)", flush=True)
-        ok += 1
-    print(f"[GEN]  done: {ok}/{len(LINES)} written to {OUT_DIR}", flush=True)
-    return 0 if ok == len(LINES) else 1
+    for register, table in todo:
+        for key, (basename, text) in table.items():
+            try:
+                pcm = synthesize(text)
+            except Exception as e:
+                print(f"[GEN]  {register}/{key}: synth FAILED ({e})", flush=True)
+                continue
+            if not pcm:
+                print(f"[GEN]  {register}/{key}: empty PCM -- skipped", flush=True)
+                continue
+            out = os.path.join(OUT_DIR, basename)
+            _write_wav(out, pcm)
+            dur = len(pcm) / 2 / 48000.0
+            print(f"[GEN]  {register}/{key}: {basename} ({dur:.1f}s, {len(pcm)}B PCM)", flush=True)
+            ok += 1
+    print(f"[GEN]  done: {ok}/{total} written to {OUT_DIR}", flush=True)
+    return 0 if ok == total else 1
 
 
 if __name__ == "__main__":
